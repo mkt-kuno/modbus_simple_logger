@@ -79,6 +79,14 @@ class TableAio(Base):
     ao_raw_5 = Column(Integer)
     ao_raw_6 = Column(Integer)
     ao_raw_7 = Column(Integer)
+    ao_raw_0 = Column(Float)
+    ao_phy_1 = Column(Float)
+    ao_phy_2 = Column(Float)
+    ao_phy_3 = Column(Float)
+    ao_phy_4 = Column(Float)
+    ao_phy_5 = Column(Float)
+    ao_phy_6 = Column(Float)
+    ao_phy_7 = Column(Float)
     param_0 = Column(Float)
     param_1 = Column(Float)
     param_2 = Column(Float)
@@ -172,9 +180,19 @@ class ThreadSafeAioData():
 
 # Create a new thread for ModbusRTU
 class Application(tk.Frame):
+    BG_CMD_MODBUS_START = 'modbus_start'
+    BG_CMD_MODBUS_STOP = 'modbus_stop'
+    BG_CMD_SAVE_START = 'save_start'
+    BG_CMD_SAVE_STOP = 'save_stop'
+    BG_CMD_TERMINATE = 'terminate'
+    BG_CMD_AO_SEND = 'ao_send'
+    BG_CMD_AI_RECEIVE = 'ai_receive'
+
     _aio = ThreadSafeAioData()
     _msg_queue = queue.Queue()
     _bg_thread = None
+    _sql_engine = None
+    _sql_db_path = ""
 
     _modbus_client = None
     _modbus_client_lock = threading.Lock()
@@ -186,71 +204,89 @@ class Application(tk.Frame):
     _label_ao_raw_list = []
     _label_ao_phy_list = []
 
+    def __init__(self, master=None):
+        super().__init__(master)
+        self.pack()
+        self.create_widgets()
+
+        self.master.title("Modbus Simple Logger")
+        self.master.geometry("1920x1000")
+        self.master.resizable(False, True)
+
+        self.after(200, self.update)
+
     def start_background_job(self):
         self._bg_thread = threading.Thread(target=self.background_thread, daemon=True)
         self._bg_thread.start()
-        self._msg_queue.put('modbus_start')
-        self._msg_queue.put("receive")
+        self._msg_queue.put(self.BG_CMD_MODBUS_START)
+        self._msg_queue.put(self.BG_CMD_AO_SEND)
+        self._msg_queue.put(self.BG_CMD_AI_RECEIVE)
 
     def stop_background_job(self):
-        self._msg_queue.put('modbus_stop')
-        self._msg_queue.put('terminate')
+        self._msg_queue.put(self.BG_CMD_MODBUS_STOP)
+        self._msg_queue.put(self.BG_CMD_TERMINATE)
         self._bg_thread.join()
+
+    def save_data_to_db(self):
+        if self._sql_engine:
+            try:
+                with Session(self._sql_engine) as session:
+                    aio = TableAio()
+                    aio.time = datetime.datetime.now()
+                    for ch in range(NUM_CH_AI):
+                        setattr(aio, 'ai_raw_%d'%ch, int(self._aio.get_ai_data(ch)))
+                        setattr(aio, 'ai_phy_%d'%ch, float(self._aio.get_ai_data_calibed(ch)))
+                    for ch in range(NUM_CH_AO):
+                        setattr(aio, 'ao_raw_%d'%ch, int(self._aio.get_ao_data(ch)))
+                        setattr(aio, 'ao_phy_%d'%ch, float(self._aio.get_ao_data_calibed(ch)))
+                    session.add(aio)
+                    session.commit()
+            except Exception as e:
+                print('Background: Failed to save data')
+                print(e)
 
     def background_thread(self):
         base_time = time.time()
         next_time = 0
         interval = 0.100
 
-        sql_engine = None
-
         while True:
-            msg = msg = self._msg_queue.get()
+            msg = self._msg_queue.get()
             match msg:
-                case 'terminate':
+                case self.BG_CMD_TERMINATE:
                     break
-                case 'modbus_start':
+                case self.BG_CMD_MODBUS_START:
                     framer = FramerType.RTU if MODBUS_MODE == 'RTU' else FramerType.ASCII
                     with self._modbus_client_lock:
                         self._modbus_client = ModbusClient.ModbusSerialClient(port=MODBUS_COM_PORT, framer=framer, baudrate=MODBUS_BAUDRATE, timeout=0.5)
                         if not self._modbus_client.connect():
                             print('Background: Modbus Failed to connect')
-                    self.sync_ao_all()
-                    self.sync_ai_all()  
                     print('Background: Modbus Connected')
-                case 'modbus_stop':
+                case self.BG_CMD_MODBUS_STOP:
                     with self._modbus_client_lock:
                         self._modbus_client.close()
                     print('Background: Modbus Closed')
-                case 'save_start':
-                    self._db_path = os.path.join(TEMP_DATA_DIR_PATH, '%s.sqlite3'%datetime.datetime.now().strftime('%Y%m%d%H%M%S'))
-                    sql_engine = create_engine('sqlite:///'+self._db_path)
-                    Base.metadata.create_all(sql_engine)
-                case 'save_stop':
-                    sql_engine.clear_compiled_cache()
-                    sql_engine.dispose()
-                    sql_engine = None
-                case 'receive':
-                    if self._modbus_client:
-                        self.sync_ai_all()
-                    if sql_engine:
-                        try:
-                            with Session(sql_engine) as session:
-                                aio = TableAio()
-                                #time include MM DD HH MM SS milliseconds
-                                aio.time = datetime.datetime.now()
-                                for ch in range(NUM_CH_AI):
-                                    setattr(aio, 'ai_raw_%d'%ch, int(self._aio.get_ai_data(ch)))
-                                    setattr(aio, 'ai_phy_%d'%ch, float(self._aio.get_ai_data_calibed(ch)))
-                                for ch in range(NUM_CH_AO):
-                                    setattr(aio, 'ao_raw_%d'%ch, int(self._aio.get_ao_data(ch)))
-                                session.add(aio)
-                                session.commit()
-                        except Exception as e:
-                            print('Background: Failed to save data')
-                            print(e)
+                case self.BG_CMD_SAVE_START:
+                    if not self._sql_engine:
+                        self._sql_db_path = os.path.join(TEMP_DATA_DIR_PATH, '%s.sqlite3'%datetime.datetime.now().strftime('%Y%m%d%H%M%S'))
+                        self._sql_engine = create_engine('sqlite:///'+self._sql_db_path)
+                        Base.metadata.create_all(self._sql_engine)
+                        print('Background: Database created')
+                        print('Background: Database path: %s'%self._sql_db_path)
+                case self.BG_CMD_SAVE_STOP:
+                    if self._sql_engine:
+                        self._sql_engine.clear_compiled_cache()
+                        self._sql_engine.dispose()
+                        self._sql_engine = None
+                        print('Background: Database closed: %s'%self._sql_db_path)
+                        self._sql_db_path = ""
+                case self.BG_CMD_AO_SEND:
+                    self.sync_ao_all()
+                case self.BG_CMD_AI_RECEIVE:
+                    self.sync_ai_all()
+                    self.save_data_to_db()
                     next_time = ((base_time - time.time()) % interval) or interval
-                    threading.Timer(next_time, lambda: self._msg_queue.put("receive")).start()
+                    threading.Timer(next_time, lambda: self._msg_queue.put(self.BG_CMD_AI_RECEIVE)).start()
                 case _:
                     print('Background: Unknown message')
 
@@ -276,24 +312,6 @@ class Application(tk.Frame):
         except Exception as e:
             print('sync_ao_all, Failed to write')
             print(e)
-
-    def sync_ao(self, ch):
-        data = int(self._aio.get_ao_data(ch))
-        try:
-            with self._modbus_client_lock:
-                self._modbus_client.write_register(ch, data, slave=MODBUS_SLAVE_ADDRESS)
-        except Exception as e:
-            print('sync_ao, Failed to write')
-            print(e)
-
-    def __init__(self, master=None):
-        super().__init__(master)
-        self.pack()
-        self.create_widgets()
-        self.after(200, self.update)
-
-        self.master.geometry("1920x1000")
-        self.master.resizable(False, True)
 
     def update(self):
         ao = self._aio.get_ao_data_all()
@@ -337,7 +355,7 @@ class Application(tk.Frame):
             if _x < 0 or _x > 10000:
                 raise ValueError('Invalid value')
             self._aio.set_ao_data(_x, ch)
-            self.sync_ao(ch)
+            self._msg_queue.put(self.BG_CMD_AO_SEND)
         except ValueError as e:
             print
 
@@ -389,10 +407,8 @@ class Application(tk.Frame):
             _label = _make_digit_label(_lframe)
             _label.grid(row=2, column=1)
             self._label_ai_vlt_list.append(_label)
-            if ch < int(NUM_CH_AI/2):
-                _make_unit_label(_lframe, 'mV', 2, 2)
-            else:
-                _make_unit_label(_lframe, 'V', 2, 2)
+            _text = 'mV' if ch < int(NUM_CH_AI/2) else 'V'
+            _make_unit_label(_lframe, _text, 2, 2)
             # micro strain
             if ch < int(NUM_CH_AI/2):
                 _make_type_label(_lframe, 'μST', 3, 0)
@@ -439,6 +455,22 @@ class Application(tk.Frame):
             # self._plot_process = mp.Process(target=self._plotter, args=(self._plotter_pipe,), daemon=True)
             # self._plot_process.start()
         _frame.pack(side='left')
+
+        self.start_save_button = tk.Button(self, text='Start Save', font=FONT_NORMAL, command=self.push_start_button)
+        self.start_save_button.pack(side='left')
+        self.stop_save_button = tk.Button(self, text='Stop Save', font=FONT_NORMAL, command=self.push_stop_button, state='disabled')
+        self.stop_save_button.pack(side='left')
+        
+
+    def push_start_button(self):
+        self.start_save_button.config(state='disabled')
+        self._msg_queue.put('save_start')
+        self.stop_save_button.config(state='normal')
+    
+    def push_stop_button(self):
+        self.stop_save_button.config(state='disabled')
+        self._msg_queue.put('save_stop')
+        self.start_save_button.config(state='normal')
 
 class ProcessPlotter:
     def __init__(self):
