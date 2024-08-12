@@ -1,9 +1,7 @@
-import time
-import copy
+import io, os, time, copy, platform, psutil, datetime
 import tkinter as tk
 
-import queue
-import threading
+import threading, queue
 import multiprocessing as mp
 
 import numpy as np
@@ -12,21 +10,128 @@ import matplotlib.pyplot as plt
 from pymodbus import FramerType
 import pymodbus.client as ModbusClient
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import declarative_base, Session
+from sqlalchemy.schema import Column
+from sqlalchemy.types import DateTime, Integer, Float, String
+Base = declarative_base()
+
 MODBUS_COM_PORT = 'COM11'
 MODBUS_MODE = 'RTU'
 MODBUS_BAUDRATE = 38400
+MODBUS_SLAVE_ADDRESS = 1
 
 NUM_CH_AI = 16
 NUM_CH_AO = 8
 NUM_CH_AO_LIMIT = 6
 HX711_VOLTAGE = 4.2
 
+FMT_STRING_FLOAT = '%.3f'
+
+APP_DATA_DIR_PATH = os.path.join(os.environ['APPDATA'], 'ModbusSimpleLogger')
+TEMP_DATA_DIR_PATH = os.path.join(os.environ['TEMP'], 'ModbusSimpleLogger')
+if not os.path.exists(TEMP_DATA_DIR_PATH):
+    os.makedirs(TEMP_DATA_DIR_PATH)
+if not os.path.exists(APP_DATA_DIR_PATH):
+    os.makedirs(APP_DATA_DIR_PATH)
+
+class TableAio(Base):
+    __tablename__ = 'aio'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    time = Column(DateTime)
+    ai_raw_0 = Column(Integer)
+    ai_raw_1 = Column(Integer)
+    ai_raw_2 = Column(Integer)
+    ai_raw_3 = Column(Integer)
+    ai_raw_4 = Column(Integer)
+    ai_raw_5 = Column(Integer)
+    ai_raw_6 = Column(Integer)
+    ai_raw_7 = Column(Integer)
+    ai_raw_8 = Column(Integer)
+    ai_raw_9 = Column(Integer)
+    ai_raw_10 = Column(Integer)
+    ai_raw_11 = Column(Integer)
+    ai_raw_12 = Column(Integer)
+    ai_raw_13 = Column(Integer)
+    ai_raw_14 = Column(Integer)
+    ai_raw_15 = Column(Integer)
+    ai_phy_0 = Column(Float)
+    ai_phy_1 = Column(Float)
+    ai_phy_2 = Column(Float)
+    ai_phy_3 = Column(Float)
+    ai_phy_4 = Column(Float)
+    ai_phy_5 = Column(Float)
+    ai_phy_6 = Column(Float)
+    ai_phy_7 = Column(Float)
+    ai_phy_8 = Column(Float)
+    ai_phy_9 = Column(Float)
+    ai_phy_10 = Column(Float)
+    ai_phy_11 = Column(Float)
+    ai_phy_12 = Column(Float)
+    ai_phy_13 = Column(Float)
+    ai_phy_14 = Column(Float)
+    ai_phy_15 = Column(Float)
+    ao_raw_0 = Column(Integer)
+    ao_raw_1 = Column(Integer)
+    ao_raw_2 = Column(Integer)
+    ao_raw_3 = Column(Integer)
+    ao_raw_4 = Column(Integer)
+    ao_raw_5 = Column(Integer)
+    ao_raw_6 = Column(Integer)
+    ao_raw_7 = Column(Integer)
+    param_0 = Column(Float)
+    param_1 = Column(Float)
+    param_2 = Column(Float)
+    param_3 = Column(Float)
+    param_4 = Column(Float)
+    param_5 = Column(Float)
+    param_6 = Column(Float)
+    param_7 = Column(Float)
+
 class ThreadSafeAioData():
     def __init__(self):
+        self._lock = threading.Lock()
         self._ai = np.array([0]*NUM_CH_AI, dtype=np.int16)
         self._ao = np.array([0]*NUM_CH_AO, dtype=np.uint16)
-        self._lock = threading.Lock()
+        self._calib_a = np.array([0.0]*NUM_CH_AI, dtype=np.float32)
+        self._calib_b = np.array([1.0]*NUM_CH_AI, dtype=np.float32)
+        self._calib_c = np.array([0.0]*NUM_CH_AI, dtype=np.float32)
+
+    def set_ai_calib_value(self, a:float, b:float, c:float, ch:int):
+        if ch < 0 or ch >= NUM_CH_AI:
+            raise ValueError('Invalid channel')
+        with self._lock:
+            self._calib_a[ch] = a
+            self._calib_b[ch] = b
+            self._calib_c[ch] = c
+
+    def get_ai_calib_value(self, ch:int):
+        if ch < 0 or ch >= NUM_CH_AI:
+            raise ValueError('Invalid channel')
+        with self._lock:
+            return (self._calib_a[ch], self._calib_b[ch], self._calib_c[ch])
+
+    def get_ai_data_calibed(self, ch:int):
+        if ch < 0 or ch >= NUM_CH_AI:
+            raise ValueError('Invalid channel')
+        with self._lock:
+            return (self._ai[ch] * self._calib_a[ch]**2 + self._ai[ch] * self._calib_b[ch] + self._calib_c[ch])
+
+    def get_ai_data_calibed_all(self):
+        with self._lock:
+            _temp = self._ai.astype(np.float32)
+            return (_temp * self._calib_a**2 + _temp * self._calib_b + self._calib_c)
+
+    def get_ao_data_calibed(self, ch:int):
+        if ch < 0 or ch >= NUM_CH_AO:
+            raise ValueError('Invalid channel')
+        with self._lock:
+            return (self._ao[ch] / 1000.0)
     
+    def get_ao_data_calibed_all(self):
+        with self._lock:
+            return (self._ao / 1000.0)
+
     def set_ao_data(self, data:np.uint16, ch:int):
         if ch < 0 or ch >= NUM_CH_AO:
             raise ValueError('Invalid channel')
@@ -51,7 +156,7 @@ class ThreadSafeAioData():
         with self._lock:
             return copy.deepcopy(self._ao[ch])
 
-    def get_ao_data_all(self):
+    def get_ao_data_all(self) -> np.uint16:
         with self._lock:
             return copy.deepcopy(self._ao)
     
@@ -59,7 +164,7 @@ class ThreadSafeAioData():
         with self._lock:
             return copy.deepcopy(self._ai)
     
-    def get_ai_data(self, ch:int):
+    def get_ai_data(self, ch:int) -> np.int16:
         if ch < 0 or ch >= NUM_CH_AI:
             raise ValueError('Invalid channel')
         with self._lock:
@@ -67,9 +172,12 @@ class ThreadSafeAioData():
 
 # Create a new thread for ModbusRTU
 class Application(tk.Frame):
-    _aio_data = ThreadSafeAioData()
+    _aio = ThreadSafeAioData()
     _msg_queue = queue.Queue()
     _bg_thread = None
+
+    _modbus_client = None
+    _modbus_client_lock = threading.Lock()
 
     _label_ai_raw_list = []
     _label_ai_vlt_list = []
@@ -78,49 +186,105 @@ class Application(tk.Frame):
     _label_ao_raw_list = []
     _label_ao_phy_list = []
 
-    _calib_a_list = [0.0]*NUM_CH_AI
-    _calib_b_list = [1.0]*NUM_CH_AI
-    _calib_c_list = [0.0]*NUM_CH_AI
-
     def start_background_job(self):
-        self._bg_thread = threading.Thread(target=self.modbus_thread, daemon=True)
+        self._bg_thread = threading.Thread(target=self.background_thread, daemon=True)
         self._bg_thread.start()
+        self._msg_queue.put('modbus_start')
+        self._msg_queue.put("receive")
 
     def stop_background_job(self):
-        self._msg_queue.put('stop')
+        self._msg_queue.put('modbus_stop')
+        self._msg_queue.put('terminate')
         self._bg_thread.join()
 
-    def modbus_thread(self):
-        print('ModbusRTU thread started')
-        framer = FramerType.RTU if MODBUS_MODE == 'RTU' else FramerType.ASCII
-        client = ModbusClient.ModbusSerialClient(port=MODBUS_COM_PORT, framer=framer, baudrate=MODBUS_BAUDRATE, timeout=0.5)
-        client.connect()
+    def background_thread(self):
         base_time = time.time()
         next_time = 0
         interval = 0.100
 
-        while client.connected:
-            msg = None
-            if not self._msg_queue.empty():
-                msg = self._msg_queue.get()
-                if type(msg) is not str:
-                    msg = None
-            if msg is not None:
-                if msg == 'stop':
-                    print('ModbusRTU: Exiting thread')
+        sql_engine = None
+
+        while True:
+            msg = msg = self._msg_queue.get()
+            match msg:
+                case 'terminate':
                     break
-                elif msg == 'send':
-                    print('ModbusRTU: Sending data')
-                    ao = self._aio_data.get_ao_data_all().tolist()[:NUM_CH_AO_LIMIT]
-                    client.write_registers(0, ao, slave=1)
+                case 'modbus_start':
+                    framer = FramerType.RTU if MODBUS_MODE == 'RTU' else FramerType.ASCII
+                    with self._modbus_client_lock:
+                        self._modbus_client = ModbusClient.ModbusSerialClient(port=MODBUS_COM_PORT, framer=framer, baudrate=MODBUS_BAUDRATE, timeout=0.5)
+                        if not self._modbus_client.connect():
+                            print('Background: Modbus Failed to connect')
+                    self.sync_ao_all()
+                    self.sync_ai_all()  
+                    print('Background: Modbus Connected')
+                case 'modbus_stop':
+                    with self._modbus_client_lock:
+                        self._modbus_client.close()
+                    print('Background: Modbus Closed')
+                case 'save_start':
+                    self._db_path = os.path.join(TEMP_DATA_DIR_PATH, '%s.sqlite3'%datetime.datetime.now().strftime('%Y%m%d%H%M%S'))
+                    sql_engine = create_engine('sqlite:///'+self._db_path)
+                    Base.metadata.create_all(sql_engine)
+                case 'save_stop':
+                    sql_engine.clear_compiled_cache()
+                    sql_engine.dispose()
+                    sql_engine = None
+                case 'receive':
+                    if self._modbus_client:
+                        self.sync_ai_all()
+                    if sql_engine:
+                        try:
+                            with Session(sql_engine) as session:
+                                aio = TableAio()
+                                #time include MM DD HH MM SS milliseconds
+                                aio.time = datetime.datetime.now()
+                                for ch in range(NUM_CH_AI):
+                                    setattr(aio, 'ai_raw_%d'%ch, int(self._aio.get_ai_data(ch)))
+                                    setattr(aio, 'ai_phy_%d'%ch, float(self._aio.get_ai_data_calibed(ch)))
+                                for ch in range(NUM_CH_AO):
+                                    setattr(aio, 'ao_raw_%d'%ch, int(self._aio.get_ao_data(ch)))
+                                session.add(aio)
+                                session.commit()
+                        except Exception as e:
+                            print('Background: Failed to save data')
+                            print(e)
+                    next_time = ((base_time - time.time()) % interval) or interval
+                    threading.Timer(next_time, lambda: self._msg_queue.put("receive")).start()
+                case _:
+                    print('Background: Unknown message')
 
-            rr = client.read_input_registers(0, NUM_CH_AI, slave=1)
-            self._aio_data.set_ai_data_all(np.array(rr.registers, dtype=np.uint16).astype(np.int16))
+    def sync_ai_all(self):
+        rr = None
+        try:
+            with self._modbus_client_lock:
+                if self._modbus_client:
+                    rr = self._modbus_client.read_input_registers(0, NUM_CH_AI, slave=MODBUS_SLAVE_ADDRESS)
+        except Exception as e:
+            print('sync_ai_all, Failed to write')
+            print(e)
+        if rr.isError():
+            return
+        self._aio.set_ai_data_all(np.array(rr.registers, dtype=np.uint16).astype(np.int16))
 
-            next_time = ((base_time - time.time()) % interval) or interval
-            time.sleep(next_time)
-        
-        client.close()
+    def sync_ao_all(self):
+        data = self._aio.get_ao_data_all().tolist()
+        try:
+            with self._modbus_client_lock:
+                if self._modbus_client:
+                    self._modbus_client.write_registers(0, data, slave=MODBUS_SLAVE_ADDRESS)
+        except Exception as e:
+            print('sync_ao_all, Failed to write')
+            print(e)
+
+    def sync_ao(self, ch):
+        data = int(self._aio.get_ao_data(ch))
+        try:
+            with self._modbus_client_lock:
+                self._modbus_client.write_register(ch, data, slave=MODBUS_SLAVE_ADDRESS)
+        except Exception as e:
+            print('sync_ao, Failed to write')
+            print(e)
 
     def __init__(self, master=None):
         super().__init__(master)
@@ -132,27 +296,38 @@ class Application(tk.Frame):
         self.master.resizable(False, True)
 
     def update(self):
-        FMT_STRING_FLOAT = '%.3f'
+        ao = self._aio.get_ao_data_all()
+        ai = self._aio.get_ai_data_all()
+        aic = self._aio.get_ai_data_calibed_all()
+        aoc = self._aio.get_ao_data_calibed_all()
 
-        ai = self._aio_data.get_ai_data_all()
         for ch in range(NUM_CH_AI):
             self._label_ai_raw_list[ch].config(text="%d"% ai[ch])
-            _x = ai[ch]
-            _a = self._calib_a_list[ch]
-            _b = self._calib_b_list[ch]
-            _c = self._calib_c_list[ch]
-            _phy = _a**2*_x + _b*_x + _c
+            _raw = ai[ch]
+            _phy = aic[ch]
             if ch < int(NUM_CH_AI/2):
-                self._label_ai_vlt_list[ch].config(text=FMT_STRING_FLOAT%(float(_x)/32768.0/128.0/2*1E3*HX711_VOLTAGE))
-                self._label_ai_ust_list[ch].config(text=FMT_STRING_FLOAT%(float(_x)/32768.0/128.0/2*1E6*2))
+                _vlt = float(_raw)/32768.0/128.0/2*1E3*HX711_VOLTAGE
+                _ust = float(_raw)/32768.0/128.0/2*1E6*2
+                self._label_ai_vlt_list[ch].config(text=FMT_STRING_FLOAT%_vlt)
+                self._label_ai_ust_list[ch].config(text=FMT_STRING_FLOAT%_ust)
             else:
-                self._label_ai_vlt_list[ch].config(text=FMT_STRING_FLOAT%(float(_x)/32768.0*6.144))
+                _vlt = float(_raw)/32768.0*6.144
+                self._label_ai_vlt_list[ch].config(text=FMT_STRING_FLOAT%_vlt)
             self._label_ai_phy_list[ch].config(text=FMT_STRING_FLOAT%_phy)
+        
         for ch in range(NUM_CH_AO):
-            _x = self._aio_data.get_ao_data(ch)
-            self._label_ao_raw_list[ch].config(text=int(_x))
-            self._label_ao_phy_list[ch].config(text=FMT_STRING_FLOAT% (float(_x)/1000.0))
-            
+            _raw = int(ao[ch])
+            _phy = float(aoc[ch])
+            self._label_ao_raw_list[ch].config(text=_raw)
+            self._label_ao_phy_list[ch].config(text=FMT_STRING_FLOAT%_phy)
+        
+        # self._plot_pipe.send((float(time.time()), float(self._aio.get_ai_data(0))))
+        # if self._plot_pipe.poll():
+        #     _bio = self._plot_pipe.recv()
+        #     _img = tk.PhotoImage(data=_bio)
+        #     self._canvas.create_image(0, 0, image=_img, anchor='nw')
+        #     self._canvas.image = _img
+
         self.after(200, self.update)
 
     def set_ao(self, ch, entry):
@@ -161,13 +336,13 @@ class Application(tk.Frame):
             _x = np.uint16(_x*1000)
             if _x < 0 or _x > 10000:
                 raise ValueError('Invalid value')
-            self._aio_data.set_ao_data(_x, ch)
-            self._msg_queue.put('send')
+            self._aio.set_ao_data(_x, ch)
+            self.sync_ao(ch)
         except ValueError as e:
             print
 
     def set_calib_vlt_offset(self, ch):
-        _x = self._aio_data.get_ai_data(ch)
+        _x = self._aio.get_ai_data(ch)
         # self._calib_disp_offset_list[ch] = int((-1)*(_x))
 
     def create_widgets(self):
@@ -257,11 +432,61 @@ class Application(tk.Frame):
         if _frame:
             self._canvas = tk.Canvas(_frame, width = 512, height = 512)
             self._canvas.create_rectangle(0, 0, 512, 512, fill = 'green')
-            self.place(x=0, y=0)
-            self._canvas.pack(side='left')
-        _frame.pack()
+            self._canvas.pack(padx=10, pady=10)
+
+            # self._plot_pipe, self._plotter_pipe = mp.Pipe()
+            # self._plotter = ProcessPlotter()
+            # self._plot_process = mp.Process(target=self._plotter, args=(self._plotter_pipe,), daemon=True)
+            # self._plot_process.start()
+        _frame.pack(side='left')
+
+class ProcessPlotter:
+    def __init__(self):
+        self.x = []
+        self.y = []
+
+    def terminate(self):
+        plt.close('all')
+
+    def __call__(self, pipe):
+        self.pipe = pipe
+        self.fig, self.ax = plt.subplots()
+        
+        while True:#self.pipe.poll():
+            command = self.pipe.recv()
+            if command is None:
+                self.terminate()
+                break
+            if command == 'clear':
+                self.x = []
+                self.y = []
+                plt.cla()
+                plt.clf()
+                #self.fig, self.ax = plt.subplots()
+                self.fig = plt.figure(figsize=(1,1), tight_layout=True)
+            else:
+                
+                for i in range(0, len(command), 2):
+                    self.x.append(command[i])
+                    self.y.append(command[i+1])
+                plt.plot(self.x, self.y)
+                #self.ax.plot(self.x, self.y)
+                #self.ax.set_aspect('equal')
+                self.fig.canvas.draw()
+                _bio = io.BytesIO()
+                print('...done')
+                plt.savefig(_bio, format='png')
+                _bio.seek(0)
+
+                self.pipe.send(_bio.read())
+
+            print('ProcessPlotter: done')
 
 def main():
+    if platform.system() == 'Windows':
+        proc = psutil.Process(os.getpid())
+        proc.nice(psutil.REALTIME_PRIORITY_CLASS)
+
     root = tk.Tk()
     app = Application(master=root)
     app.start_background_job()
