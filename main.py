@@ -24,16 +24,10 @@ MODBUS_SLAVE_ADDRESS = 1
 NUM_CH_AI = 16
 NUM_CH_AO = 8
 NUM_CH_AO_LIMIT = 6
-HX711_VOLTAGE = 4.2
-
-FMT_STRING_FLOAT = '%.3f'
+NUM_CH_PARAM = 16
 
 APP_DATA_DIR_PATH = os.path.join(os.environ['APPDATA'], 'ModbusSimpleLogger')
 TEMP_DATA_DIR_PATH = os.path.join(os.environ['TEMP'], 'ModbusSimpleLogger')
-if not os.path.exists(TEMP_DATA_DIR_PATH):
-    os.makedirs(TEMP_DATA_DIR_PATH)
-if not os.path.exists(APP_DATA_DIR_PATH):
-    os.makedirs(APP_DATA_DIR_PATH)
 
 class TableAio(Base):
     __tablename__ = 'aio'
@@ -95,6 +89,14 @@ class TableAio(Base):
     param_5 = Column(Float)
     param_6 = Column(Float)
     param_7 = Column(Float)
+    param_8 = Column(Float)
+    param_9 = Column(Float)
+    param_10 = Column(Float)
+    param_11 = Column(Float)
+    param_12 = Column(Float)
+    param_13 = Column(Float)
+    param_14 = Column(Float)
+    param_15 = Column(Float)
 
 class ThreadSafeAioData():
     def __init__(self):
@@ -104,6 +106,29 @@ class ThreadSafeAioData():
         self._calib_a = np.array([0.0]*NUM_CH_AI, dtype=np.float32)
         self._calib_b = np.array([1.0]*NUM_CH_AI, dtype=np.float32)
         self._calib_c = np.array([0.0]*NUM_CH_AI, dtype=np.float32)
+        self._param = np.array([0.0]*NUM_CH_PARAM, dtype=np.float32)
+
+    def set_param_value(self, value:float, ch:int):
+        if ch < 0 or ch >= NUM_CH_PARAM:
+            raise ValueError('Invalid channel')
+        with self._lock:
+            self._param[ch] = value
+    
+    def get_param_value(self, ch:int):
+        if ch < 0 or ch >= NUM_CH_PARAM:
+            raise ValueError('Invalid channel')
+        with self._lock:
+            return self._param[ch]
+    
+    def set_param_value_all(self, data:np.ndarray):
+        if data.shape != (NUM_CH_PARAM,):
+            raise ValueError('Invalid data shape')
+        with self._lock:
+            self._param = copy.deepcopy(data)
+    
+    def get_param_value_all(self):
+        with self._lock:
+            return copy.deepcopy(self._param)
 
     def set_ai_calib_value(self, a:float, b:float, c:float, ch:int):
         if ch < 0 or ch >= NUM_CH_AI:
@@ -188,6 +213,9 @@ class Application(tk.Frame):
     BG_CMD_AO_SEND = 'ao_send'
     BG_CMD_AI_RECEIVE = 'ai_receive'
 
+    HX711_VOLTAGE = 4.2
+    FMT_STRING_FLOAT = '%.3f'
+
     _aio = ThreadSafeAioData()
     _msg_queue = queue.Queue()
     _bg_thread = None
@@ -203,6 +231,7 @@ class Application(tk.Frame):
     _label_ai_phy_list = []
     _label_ao_raw_list = []
     _label_ao_phy_list = []
+    _label_param_list = []
 
     def __init__(self, master=None):
         super().__init__(master)
@@ -245,6 +274,26 @@ class Application(tk.Frame):
                 print('Background: Failed to save data')
                 print(e)
 
+    def background_calc_param(self):
+        try:
+            _previous = self._aio.get_param_value_all()
+
+            ## @todo implement your own calculation
+            for ch in range(NUM_CH_PARAM):
+                if ch < 4:
+                    _previous[ch] = np.sin(time.time()/3.14)
+                elif ch < 8:
+                    _previous[ch] = np.abs(np.sin(time.time()/3.14))
+                elif ch < 12:
+                    _previous[ch] = 1.0 if np.sin(time.time()/3.14) > 0.0 else -1
+                else:
+                    _previous[ch] = _previous[ch] + 0.01 if _previous[ch]+0.01 < 1 else -1
+            
+            self._aio.set_param_value_all(_previous)
+        except Exception as e:
+            print('Background: Failed to calc param')
+            print(e)
+
     def background_thread(self):
         base_time = time.time()
         next_time = 0
@@ -285,6 +334,7 @@ class Application(tk.Frame):
                 case self.BG_CMD_AI_RECEIVE:
                     self.sync_ai_all()
                     self.save_data_to_db()
+                    self.background_calc_param()
                     next_time = ((base_time - time.time()) % interval) or interval
                     threading.Timer(next_time, lambda: self._msg_queue.put(self.BG_CMD_AI_RECEIVE)).start()
                 case _:
@@ -318,33 +368,38 @@ class Application(tk.Frame):
         ai = self._aio.get_ai_data_all()
         aic = self._aio.get_ai_data_calibed_all()
         aoc = self._aio.get_ao_data_calibed_all()
+        par = self._aio.get_param_value_all()
 
         for ch in range(NUM_CH_AI):
             self._label_ai_raw_list[ch].config(text="%d"% ai[ch])
             _raw = ai[ch]
             _phy = aic[ch]
             if ch < int(NUM_CH_AI/2):
-                _vlt = float(_raw)/32768.0/128.0/2*1E3*HX711_VOLTAGE
+                _vlt = float(_raw)/32768.0/128.0/2*1E3*self.HX711_VOLTAGE
                 _ust = float(_raw)/32768.0/128.0/2*1E6*2
-                self._label_ai_vlt_list[ch].config(text=FMT_STRING_FLOAT%_vlt)
-                self._label_ai_ust_list[ch].config(text=FMT_STRING_FLOAT%_ust)
+                self._label_ai_vlt_list[ch].config(text=self.FMT_STRING_FLOAT%_vlt)
+                self._label_ai_ust_list[ch].config(text=self.FMT_STRING_FLOAT%_ust)
             else:
                 _vlt = float(_raw)/32768.0*6.144
-                self._label_ai_vlt_list[ch].config(text=FMT_STRING_FLOAT%_vlt)
-            self._label_ai_phy_list[ch].config(text=FMT_STRING_FLOAT%_phy)
+                self._label_ai_vlt_list[ch].config(text=self.FMT_STRING_FLOAT%_vlt)
+            self._label_ai_phy_list[ch].config(text=self.FMT_STRING_FLOAT%_phy)
         
         for ch in range(NUM_CH_AO):
             _raw = int(ao[ch])
             _phy = float(aoc[ch])
             self._label_ao_raw_list[ch].config(text=_raw)
-            self._label_ao_phy_list[ch].config(text=FMT_STRING_FLOAT%_phy)
-        
-        # self._plot_pipe.send((float(time.time()), float(self._aio.get_ai_data(0))))
-        # if self._plot_pipe.poll():
-        #     _bio = self._plot_pipe.recv()
-        #     _img = tk.PhotoImage(data=_bio)
-        #     self._canvas.create_image(0, 0, image=_img, anchor='nw')
-        #     self._canvas.image = _img
+            self._label_ao_phy_list[ch].config(text=self.FMT_STRING_FLOAT%_phy)
+
+        for ch in range(NUM_CH_PARAM):
+            _phy = float(par[ch])
+            self._label_param_list[ch].config(text=self.FMT_STRING_FLOAT%_phy)
+
+        self._plot_pipe.send((float(time.time()), float(self._aio.get_param_value(0))))
+        if self._plot_pipe.poll():
+            _bio = self._plot_pipe.recv()
+            _img = tk.PhotoImage(data=_bio)
+            self._canvas.create_image(0, 0, image=_img, anchor='nw')
+            self._canvas.image = _img
 
         self.after(200, self.update)
 
@@ -369,6 +424,7 @@ class Application(tk.Frame):
         WIDTH_OF_TYPE_LABEL = 4
         WIDTH_OF_DIGIT_LABEL = 12
         WIDTH_OF_UNIT_LABEL = 5
+        WIDTH_OF_INFO_LABEL = 20
 
         FONT_SIZE_NORMAL = 14
         FONT_SIZE_LARGE = 20
@@ -384,76 +440,111 @@ class Application(tk.Frame):
         _make_normal_label =  lambda p, t, w, r, c: tk.Label(p, text=t, font=FONT_NORMAL, width=w).grid(row=r, column=c)
         _make_type_label =    lambda p, t, r, c: _make_normal_label(p, t, WIDTH_OF_TYPE_LABEL, r, c)
         _make_unit_label =    lambda p, t, r, c: _make_normal_label(p, t, WIDTH_OF_UNIT_LABEL, r, c)
+        _make_info_label  =   lambda p, t, r, c:  tk.Label(p, text=t, font=FONT_NORMAL, width=WIDTH_OF_INFO_LABEL).grid(row=r, column=c, columnspan=3)
 
+        # Analog Input Frame
         _parent_frame = tk.LabelFrame(self, text='AnalogInput %d ch'%NUM_CH_AI, font=FONT_LARGE_BOLD)
         for ch in range(NUM_CH_AI):
             _text = 'CH %d (HX711-%d)'% (ch, ch) if ch < int(NUM_CH_AI/2) else 'CH %d (ADS1115-%d)'% (ch, (ch-8)//4)
             _lframe = tk.LabelFrame(_parent_frame, text=_text, font=FONT_BOLD)
             _lframe.grid(row=ch//int(NUM_CH_AI/2), column=ch%int(NUM_CH_AI/2), padx=3, pady=5, sticky='w')
+            # Information
+            _row = 0
+            _make_info_label(_lframe, "CH Infomation Here", _row, 0)
             # Raw Value
-            _make_type_label(_lframe, 'Raw', 0, 0)
+            _row += 1
+            _make_type_label(_lframe, 'Raw', _row, 0)
             _label = _make_digit_label(_lframe)
-            _label.grid(row=0, column=1)
+            _label.grid(row=_row, column=1)
             self._label_ai_raw_list.append(_label)
-            _make_unit_label(_lframe, 'i16', 0, 2)
+            _make_unit_label(_lframe, 'i16', _row, 2)
             ## Physical Value
-            _make_type_label(_lframe, 'Phy', 1, 0)
+            _row += 1
+            _make_type_label(_lframe, 'Phy', _row, 0)
             _label = _make_digit_label(_lframe)
-            _label.grid(row=1, column=1)
+            _label.grid(row=_row, column=1)
             self._label_ai_phy_list.append(_label)
-            _make_unit_label(_lframe, '___', 1, 2)
+            _make_unit_label(_lframe, '___', _row, 2)
             # Voltage Value
-            _make_type_label(_lframe, 'Vlt', 2, 0)
+            _row += 1
+            _make_type_label(_lframe, 'Vlt', _row, 0)
             _label = _make_digit_label(_lframe)
-            _label.grid(row=2, column=1)
+            _label.grid(row=_row, column=1)
             self._label_ai_vlt_list.append(_label)
             _text = 'mV' if ch < int(NUM_CH_AI/2) else 'V'
-            _make_unit_label(_lframe, _text, 2, 2)
+            _make_unit_label(_lframe, _text, _row, 2)
             # micro strain
+            _row += 1
             if ch < int(NUM_CH_AI/2):
-                _make_type_label(_lframe, 'μST', 3, 0)
+                _make_type_label(_lframe, 'μST', _row, 0)
                 _label = _make_digit_label(_lframe)
-                _label.grid(row=3, column=1)
+                _label.grid(row=_row, column=1)
                 self._label_ai_ust_list.append(_label)
-                _make_unit_label(_lframe, 'με', 3, 2)
+                _make_unit_label(_lframe, 'με', _row, 2)
         _parent_frame.pack(side=tk.TOP, padx=5)
 
+        # Analog Output Frame
         _parent_frame = tk.LabelFrame(self, text='AnalogOutput %d ch'%NUM_CH_AO, font=FONT_LARGE_BOLD)
         for ch in range(NUM_CH_AO):
             _state = 'disabled' if ch >= NUM_CH_AO_LIMIT else 'normal'
             _text = 'CH %d (GP8403-%d)'% (ch, ch//2)
             _lframe = tk.LabelFrame(_parent_frame, text=_text, font=FONT_BOLD)
             _lframe.grid(row=1, column=ch, padx=3, pady=5, sticky='w')
+            # Information
+            _row = 0
+            _make_info_label(_lframe, "CH Infomation Here", _row, 0)
             # Raw Value
-            _make_type_label(_lframe, 'Raw', 0, 0)
+            _row += 1
+            _make_type_label(_lframe, 'Raw', _row, 0)
             _label = _make_digit_label_s(_lframe, _state)
-            _label.grid(row=0, column=1)
+            _label.grid(row=_row, column=1)
             self._label_ao_raw_list.append(_label)
-            _make_unit_label(_lframe, 'u16', 0, 2)
+            _make_unit_label(_lframe, 'u16', _row, 2)
             # Physical Value
-            _make_type_label(_lframe, 'Phy', 1, 0)
+            _row += 1
+            _make_type_label(_lframe, 'Phy', _row, 0)
             _label = _make_digit_label_s(_lframe, _state)
-            _label.grid(row=1, column=1)
+            _label.grid(row=_row, column=1)
             self._label_ao_phy_list.append(_label) 
-            _make_unit_label(_lframe, 'V', 1, 2)
+            _make_unit_label(_lframe, 'V', _row, 2)
             # Set Value Entry and Button
-            _make_type_label(_lframe, 'SetV', 2, 0)
+            _row += 1
+            _make_type_label(_lframe, 'Vlt', _row, 0)
             _entry = tk.Entry(_lframe, width=WIDTH_OF_DIGIT_LABEL, font=FONT_NORMAL, justify='right', state=_state)
-            _entry.grid(row=2, column=1)
+            _entry.grid(row=_row, column=1)
             _entry.insert(0, '0')
-            tk.Button(_lframe, text='Set', font=FONT_SMALL, command=lambda ch=ch, entry=_entry: self.set_ao(ch, entry), state=_state).grid(row=2, column=2)
+            tk.Button(_lframe, text='Set', font=FONT_SMALL, command=lambda ch=ch, entry=_entry: self.set_ao(ch, entry), state=_state).grid(row=_row, column=2)
+        _parent_frame.pack(side=tk.TOP, padx=5)
+
+        # Parameter Frame
+        _parent_frame = tk.LabelFrame(self, text='Parameter', font=FONT_LARGE_BOLD)
+        for ch in range(NUM_CH_PARAM):
+            _text = 'Param %d'% ch
+            _lframe = tk.LabelFrame(_parent_frame, text=_text, font=FONT_BOLD)
+            _lframe.grid(row=ch//int(NUM_CH_PARAM/2), column=ch%int(NUM_CH_PARAM/2), padx=3, pady=5, sticky='w')
+            # Information
+            _row = 0
+            _make_info_label(_lframe, "CH Infomation Here", _row, 0)
+            # Physical Value
+            _row += 1
+            _make_type_label(_lframe, 'Phy', _row, 0)
+            _label = _make_digit_label(_lframe)
+            _label.grid(row=_row, column=1)
+            self._label_param_list.append(_label)
+            _make_unit_label(_lframe, '___',_row, 2)
+
         _parent_frame.pack(side=tk.TOP, padx=5)
 
         _frame = tk.Frame(self, width=1900, relief='raised')
         if _frame:
-            self._canvas = tk.Canvas(_frame, width = 512, height = 512)
-            self._canvas.create_rectangle(0, 0, 512, 512, fill = 'green')
-            self._canvas.pack(padx=10, pady=10)
+            self._canvas = tk.Canvas(_frame, width = 384, height = 216)
+            self._canvas.create_rectangle(0, 0, 384+1, 216+1, fill = 'white')
+            self._canvas.pack(padx=10, pady=8)
 
-            # self._plot_pipe, self._plotter_pipe = mp.Pipe()
-            # self._plotter = ProcessPlotter()
-            # self._plot_process = mp.Process(target=self._plotter, args=(self._plotter_pipe,), daemon=True)
-            # self._plot_process.start()
+            self._plot_pipe, self._plotter_pipe = mp.Pipe()
+            self._plotter = ProcessPlotter()
+            self._plot_process = mp.Process(target=self._plotter, args=(self._plotter_pipe,), daemon=True)
+            self._plot_process.start()
         _frame.pack(side='left')
 
         self.start_save_button = tk.Button(self, text='Start Save', font=FONT_NORMAL, command=self.push_start_button)
@@ -495,16 +586,16 @@ class ProcessPlotter:
                 plt.cla()
                 plt.clf()
                 #self.fig, self.ax = plt.subplots()
-                self.fig = plt.figure(figsize=(1,1), tight_layout=True)
+                self.fig = plt.figure(figsize=(384,216), tight_layout=True)
             else:
-                
                 for i in range(0, len(command), 2):
                     self.x.append(command[i])
                     self.y.append(command[i+1])
                 plt.plot(self.x, self.y)
-                #self.ax.plot(self.x, self.y)
-                #self.ax.set_aspect('equal')
+
+                self.fig.set_size_inches(4.0, 2.15)
                 self.fig.canvas.draw()
+                self.fig.canvas.flush_events()
                 _bio = io.BytesIO()
                 print('...done')
                 plt.savefig(_bio, format='png')
@@ -515,6 +606,11 @@ class ProcessPlotter:
             print('ProcessPlotter: done')
 
 def main():
+    if not os.path.exists(TEMP_DATA_DIR_PATH):
+        os.makedirs(TEMP_DATA_DIR_PATH)
+    if not os.path.exists(APP_DATA_DIR_PATH):
+        os.makedirs(APP_DATA_DIR_PATH)
+
     if platform.system() == 'Windows':
         proc = psutil.Process(os.getpid())
         proc.nice(psutil.REALTIME_PRIORITY_CLASS)
