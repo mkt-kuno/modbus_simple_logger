@@ -1,12 +1,10 @@
-import io, os, time, copy, json, platform, psutil, datetime
+import os, time, copy, json, platform, psutil, datetime
 import tkinter as tk
 import tkinter.ttk as ttk
 
 import threading, queue
-import multiprocessing as mp
 
 import numpy as np
-import matplotlib.pyplot as plt
 
 from pymodbus import FramerType
 import pymodbus.client as ModbusClient

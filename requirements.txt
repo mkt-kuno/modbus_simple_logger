@@ -1,0 +1,4 @@
+python == 3.12.2
+pymodbus == 3.7.0
+numpy == 1.26.4
+SQLAlchemy == 2.0.29
