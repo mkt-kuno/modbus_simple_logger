@@ -1,4 +1,4 @@
-import io, os, time, copy, platform, psutil, datetime
+import io, os, time, copy, json, platform, psutil, datetime
 import tkinter as tk
 import tkinter.ttk as ttk
 
@@ -16,6 +16,8 @@ from sqlalchemy.orm import declarative_base, Session
 from sqlalchemy.schema import Column
 from sqlalchemy.types import DateTime, Integer, Float, String
 Base = declarative_base()
+
+DEBUG = False
 
 MODBUS_COM_PORT = 'COM11'
 MODBUS_MODE = 'RTU'
@@ -104,9 +106,12 @@ class ThreadSafeAioData():
         self._lock = threading.Lock()
         self._ai = np.array([0]*NUM_CH_AI, dtype=np.int16)
         self._ao = np.array([0]*NUM_CH_AO, dtype=np.uint16)
-        self._calib_a = np.array([0.0]*NUM_CH_AI, dtype=np.float32)
-        self._calib_b = np.array([1.0]*NUM_CH_AI, dtype=np.float32)
-        self._calib_c = np.array([0.0]*NUM_CH_AI, dtype=np.float32)
+        self._ai_calib_a = np.array([0.0]*NUM_CH_AI, dtype=np.float32)
+        self._ai_calib_b = np.array([1.0]*NUM_CH_AI, dtype=np.float32)
+        self._ai_calib_c = np.array([0.0]*NUM_CH_AI, dtype=np.float32)
+        self._ao_calib_a = np.array([0.0]*NUM_CH_AO, dtype=np.float32)
+        self._ao_calib_b = np.array([1.0]*NUM_CH_AO, dtype=np.float32)
+        self._ao_calib_c = np.array([0.0]*NUM_CH_AO, dtype=np.float32)
         self._param = np.array([0.0]*NUM_CH_PARAM, dtype=np.float32)
 
     def set_param_value(self, value:float, ch:int):
@@ -135,36 +140,65 @@ class ThreadSafeAioData():
         if ch < 0 or ch >= NUM_CH_AI:
             raise ValueError('Invalid channel')
         with self._lock:
-            self._calib_a[ch] = a
-            self._calib_b[ch] = b
-            self._calib_c[ch] = c
+            self._ai_calib_a[ch] = a
+            self._ai_calib_b[ch] = b
+            self._ai_calib_c[ch] = c
 
     def get_ai_calib_value(self, ch:int):
         if ch < 0 or ch >= NUM_CH_AI:
             raise ValueError('Invalid channel')
         with self._lock:
-            return (self._calib_a[ch], self._calib_b[ch], self._calib_c[ch])
+            return (float(self._ai_calib_a[ch]), float(self._ai_calib_b[ch]), float(self._ai_calib_c[ch]))
+
+    def set_ao_calib_value(self, a:float, b:float, c:float, ch:int):
+        if ch < 0 or ch >= NUM_CH_AO:
+            raise ValueError('Invalid channel')
+        with self._lock:
+            self._ao_calib_a[ch] = a
+            self._ao_calib_b[ch] = b
+            self._ao_calib_c[ch] = c
+    
+    def get_ao_calib_value(self, ch:int):
+        if ch < 0 or ch >= NUM_CH_AO:
+            raise ValueError('Invalid channel')
+        with self._lock:
+            return (float(self._ao_calib_a[ch]), float(self._ao_calib_b[ch]), float(self._ao_calib_c[ch]))
 
     def get_ai_data_calibed(self, ch:int):
         if ch < 0 or ch >= NUM_CH_AI:
             raise ValueError('Invalid channel')
         with self._lock:
-            return (self._ai[ch] * self._calib_a[ch]**2 + self._ai[ch] * self._calib_b[ch] + self._calib_c[ch])
+            _x = self._ai[ch]
+            _a = self._ai_calib_a[ch]
+            _b = self._ai_calib_b[ch]
+            _c = self._ai_calib_c[ch]
+            return (_x * _a**2 + _x * _b + _c)
 
     def get_ai_data_calibed_all(self):
         with self._lock:
-            _temp = self._ai.astype(np.float32)
-            return (_temp * self._calib_a**2 + _temp * self._calib_b + self._calib_c)
+            _x = self._ai
+            _a = self._ai_calib_a
+            _b = self._ai_calib_b
+            _c = self._ai_calib_c
+            return (_x * _a**2 + _x * _b + _c)
 
     def get_ao_data_calibed(self, ch:int):
         if ch < 0 or ch >= NUM_CH_AO:
             raise ValueError('Invalid channel')
         with self._lock:
-            return (self._ao[ch] / 1000.0)
+            _x = self._ao[ch]
+            _a = self._ao_calib_a[ch]
+            _b = self._ao_calib_b[ch]
+            _c = self._ao_calib_c[ch]
+            return (_x * _a**2 + _x * _b + _c)
     
     def get_ao_data_calibed_all(self):
         with self._lock:
-            return (self._ao / 1000.0)
+            _x = self._ao
+            _a = self._ao_calib_a
+            _b = self._ao_calib_b
+            _c = self._ao_calib_c
+            return (_x * _a**2 + _x * _b + _c)
 
     def set_ao_data(self, data:np.uint16, ch:int):
         if ch < 0 or ch >= NUM_CH_AO:
@@ -214,8 +248,11 @@ class Application(tk.Frame):
     BG_CMD_AO_SEND = 'ao_send'
     BG_CMD_AI_RECEIVE = 'ai_receive'
 
+    DEFALUT_CONFIG_JSON_NAME = 'config.json'
+
     HX711_VOLTAGE = 4.2
     FMT_STRING_FLOAT = '%.3f'
+    FMT_STRING_CALIB_FLOAT = '%.6f'
 
     _aio = ThreadSafeAioData()
     _msg_queue = queue.Queue()
@@ -234,32 +271,114 @@ class Application(tk.Frame):
     _label_ai_phy_list = []
     _label_ao_raw_list = []
     _label_ao_phy_list = []
+    _label_ao_vlt_list = []
     _label_param_list = []
+
+    _entry_ai_info_list = []
+    _entry_ai_unit_list = []
+    _entry_ao_info_list = []
+    _entry_ao_unit_list = []
+    _entry_param_info_list = []
+    _entry_param_unit_list = []
+
+    def _on_closing(self):
+        self._stop_background_job()
+        self._save_config_json_to_appdata()
+        self.master.destroy()
 
     def __init__(self, master=None):
         super().__init__(master)
         self.pack()
-        self.create_widgets()
+
+        master.protocol("WM_DELETE_WINDOW", self._on_closing)
+
+        self._config_json = {}
+        self._load_config_json_from_appdata()
+
+        # restore calib values to AIO
+        for ch in range(NUM_CH_AI):
+            _a, _b, _c = self._config_json['ai'][ch]['calib']
+            self._aio.set_ai_calib_value(_a, _b, _c, ch)
+        for ch in range(NUM_CH_AO):
+            _a, _b, _c = self._config_json['ao'][ch]['calib']
+            self._aio.set_ao_calib_value(_a, _b, _c, ch)
+
+        self._create_widgets()
 
         self.master.title("Modbus Simple Logger")
         self.master.geometry("1920x1000")
         self.master.resizable(False, True)
 
-        self.after(200, self.update)
+        self._start_background_job()
 
-    def start_background_job(self):
-        self._bg_thread = threading.Thread(target=self.background_thread, daemon=True)
+        self.after(200, self._update_display)
+
+    def _create_config_json(self):
+        ret = {}
+        _ai = []
+        for ch in range(NUM_CH_AI):
+            _ch_data = {}
+            _ch_data['info'] = "AI CH %d INFO"%ch if len(self._entry_ai_info_list)<=ch else self._entry_ai_info_list[ch].get()
+            _ch_data['unit'] = "nan" if len(self._entry_ai_unit_list)<=ch else self._entry_ai_unit_list[ch].get()
+            _ch_data['calib'] = self._aio.get_ai_calib_value(ch)
+            _ai.append(_ch_data)
+        ret['ai'] = _ai
+
+        _ao = []
+        for ch in range(NUM_CH_AO):
+            _ch_data = {}
+            _ch_data['info'] = "AO CH %d INFO"%ch if len(self._entry_ao_info_list)<=ch else self._entry_ao_info_list[ch].get()
+            _ch_data['unit'] = "nan" if len(self._entry_ao_unit_list)<=ch else self._entry_ao_unit_list[ch].get()
+            _ch_data['calib'] =  self._aio.get_ao_calib_value(ch)
+            _ao.append(_ch_data)
+        ret['ao'] = _ao
+
+        _param = []
+        for ch in range(NUM_CH_PARAM):
+            _ch_data = {}
+            _ch_data['info'] = "Param CH %d INFO"%ch if len(self._entry_param_info_list)<=ch else self._entry_param_info_list[ch].get()
+            _ch_data['unit'] = "nan" if len(self._entry_param_unit_list)<=ch else self._entry_param_unit_list[ch].get()
+            _param.append(_ch_data)
+        ret['param'] = _param
+        
+        return ret
+
+    def _save_config_json_to_appdata(self):
+        self._config_json = self._create_config_json()
+        with open(os.path.join(APP_DATA_DIR_PATH, self.DEFALUT_CONFIG_JSON_NAME), 'w') as f:
+            json.dump(self._config_json, f)
+
+    def _load_config_json_from_appdata(self):
+        if not os.path.exists(os.path.join(APP_DATA_DIR_PATH, self.DEFALUT_CONFIG_JSON_NAME)):
+            self._config_json = self._create_config_json()
+            return
+        try:
+            with open(os.path.join(APP_DATA_DIR_PATH, self.DEFALUT_CONFIG_JSON_NAME), 'r') as f:
+                self._config_json = json.load(f)
+        except Exception as e:
+            print('Failed to load config.json')
+            print(e)
+            self._config_json = self._create_config_json()
+
+    def _start_background_job(self):
+        if self._bg_thread:
+            # Already started
+            return
+        self._bg_thread = threading.Thread(target=self._background_thread, daemon=True)
         self._bg_thread.start()
         self._msg_queue.put(self.BG_CMD_MODBUS_START)
         self._msg_queue.put(self.BG_CMD_AO_SEND)
         self._msg_queue.put(self.BG_CMD_AI_RECEIVE)
 
-    def stop_background_job(self):
+    def _stop_background_job(self):
+        if not self._bg_thread:
+            # Already stopped
+            return
         self._msg_queue.put(self.BG_CMD_MODBUS_STOP)
         self._msg_queue.put(self.BG_CMD_TERMINATE)
         self._bg_thread.join()
 
-    def save_data_to_db(self):
+    def _save_data_to_db(self):
         if self._sql_engine:
             try:
                 with Session(self._sql_engine) as session:
@@ -277,7 +396,7 @@ class Application(tk.Frame):
                 print('Background: Failed to save data')
                 print(e)
 
-    def background_calc_param(self):
+    def _background_calc_param(self):
         try:
             _previous = self._aio.get_param_value_all()
 
@@ -297,7 +416,7 @@ class Application(tk.Frame):
             print('Background: Failed to calc param')
             print(e)
 
-    def background_thread(self):
+    def _background_thread(self):
         base_time = time.time()
         next_time = 0
         interval = 0.100
@@ -333,17 +452,17 @@ class Application(tk.Frame):
                         print('Background: Database closed: %s'%self._sql_db_path)
                         self._sql_db_path = ""
                 case self.BG_CMD_AO_SEND:
-                    self.sync_ao_all()
+                    self._sync_ao_all()
                 case self.BG_CMD_AI_RECEIVE:
-                    self.sync_ai_all()
-                    self.save_data_to_db()
-                    self.background_calc_param()
+                    self._sync_ai_all()
+                    self._save_data_to_db()
+                    self._background_calc_param()
                     next_time = ((base_time - time.time()) % interval) or interval
                     threading.Timer(next_time, lambda: self._msg_queue.put(self.BG_CMD_AI_RECEIVE)).start()
                 case _:
                     print('Background: Unknown message')
 
-    def sync_ai_all(self):
+    def _sync_ai_all(self):
         rr = None
         try:
             with self._modbus_client_lock:
@@ -352,11 +471,10 @@ class Application(tk.Frame):
         except Exception as e:
             print('sync_ai_all, Failed to write')
             print(e)
-        if rr.isError():
-            return
-        self._aio.set_ai_data_all(np.array(rr.registers, dtype=np.uint16).astype(np.int16))
+        if rr is not None and not rr.isError():
+            self._aio.set_ai_data_all(np.array(rr.registers, dtype=np.uint16).astype(np.int16))
 
-    def sync_ao_all(self):
+    def _sync_ao_all(self):
         data = self._aio.get_ao_data_all().tolist()
         try:
             with self._modbus_client_lock:
@@ -366,7 +484,7 @@ class Application(tk.Frame):
             print('sync_ao_all, Failed to write')
             print(e)
 
-    def update(self):
+    def _update_display(self):
         ao = self._aio.get_ao_data_all()
         ai = self._aio.get_ai_data_all()
         aic = self._aio.get_ai_data_calibed_all()
@@ -379,7 +497,7 @@ class Application(tk.Frame):
             _phy = aic[ch]
             if ch < int(NUM_CH_AI/2):
                 _vlt = float(_raw)/32768.0/128.0/2*1E3*self.HX711_VOLTAGE
-                _ust = float(_raw)/32768.0/128.0/2*1E6*2
+                _ust = float(_raw)/32768.0/128.0/2*1E3*2E3
                 self._label_ai_vlt_list[ch].config(text=self.FMT_STRING_FLOAT%_vlt)
                 self._label_ai_ust_list[ch].config(text=self.FMT_STRING_FLOAT%_ust)
             else:
@@ -390,45 +508,18 @@ class Application(tk.Frame):
         for ch in range(NUM_CH_AO):
             _raw = int(ao[ch])
             _phy = float(aoc[ch])
+            _vlt = float(ao[ch])/1000.0
             self._label_ao_raw_list[ch].config(text=_raw)
             self._label_ao_phy_list[ch].config(text=self.FMT_STRING_FLOAT%_phy)
+            self._label_ao_vlt_list[ch].config(text=self.FMT_STRING_FLOAT%_vlt)
 
         for ch in range(NUM_CH_PARAM):
             _phy = float(par[ch])
             self._label_param_list[ch].config(text=self.FMT_STRING_FLOAT%_phy)
 
-        if not self._pipe_is_wainting:
-            x = 0.0
-            y = 0.0
-            _xa = self._x_axis_menu.get()
-            _ya = self._y_axis_menu.get()
-            match _xa.split('_')[0]:
-                case 'time':
-                    x = time.time()
-                case 'phy':
-                    x = aic[int(_xa.split('_')[1])]
-                case 'param':
-                    x = par[int(_xa.split('_')[1])]
-            match _ya.split('_')[0]:
-                case 'time':
-                    y = time.time()
-                case 'phy':
-                    y = aic[int(_ya.split('_')[1])]
-                case 'param':
-                    y = par[int(_ya.split('_')[1])]
-            self._pipe.send((x, y))
-            #self._pipe.send((time.time(), self._aio.get_param_value(0)))
-            self._pipe_is_wainting = True
-        if self._pipe_is_wainting and self._pipe.poll():
-            _bio = self._pipe.recv()
-            _img = tk.PhotoImage(data=_bio)
-            self._canvas_live.create_image(0, 0, image=_img, anchor='nw')
-            self._canvas_live.image = _img
-            self._pipe_is_wainting = False
+        self.after(200, self._update_display)
 
-        self.after(200, self.update)
-
-    def set_ao(self, ch, entry):
+    def _set_ao(self, ch, entry):
         try:
             _x = float(entry.get())
             _x = np.uint16(_x*1000)
@@ -437,23 +528,20 @@ class Application(tk.Frame):
             self._aio.set_ao_data(_x, ch)
             self._msg_queue.put(self.BG_CMD_AO_SEND)
         except ValueError as e:
-            print
+            pass
 
-    def set_calib_vlt_offset(self, ch):
-        _x = self._aio.get_ai_data(ch)
-        # self._calib_disp_offset_list[ch] = int((-1)*(_x))
-
-    def create_widgets(self):
+    def _create_widgets(self):
         FONT_NAME = 'Consolas'
 
         WIDTH_OF_TYPE_LABEL = 4
         WIDTH_OF_DIGIT_LABEL = 12
         WIDTH_OF_UNIT_LABEL = 5
-        WIDTH_OF_INFO_LABEL = 20
+        WIDTH_OF_INFO_LABEL = 21
 
         FONT_SIZE_NORMAL = 14
         FONT_SIZE_LARGE = 20
 
+        FONT_TINY = (FONT_NAME, FONT_SIZE_NORMAL-3)
         FONT_SMALL = (FONT_NAME, FONT_SIZE_NORMAL-2)
         FONT_NORMAL = (FONT_NAME, FONT_SIZE_NORMAL)
         FONT_BOLD = (FONT_NAME, FONT_SIZE_NORMAL, 'bold')
@@ -467,15 +555,29 @@ class Application(tk.Frame):
         _make_unit_label =    lambda p, t, r, c: _make_normal_label(p, t, WIDTH_OF_UNIT_LABEL, r, c)
         _make_info_label  =   lambda p, t, r, c:  tk.Label(p, text=t, font=FONT_NORMAL, width=WIDTH_OF_INFO_LABEL).grid(row=r, column=c, columnspan=3)
 
+        def _make_info_entry(p, t, r, c):
+            tke = tk.Entry(p, font=FONT_NORMAL, width=WIDTH_OF_INFO_LABEL, background="white", justify='center')
+            tke.insert(0, t)
+            tke.grid(row=r, column=c, columnspan=3, pady=1)
+            return tke
+        def _make_unit_entry(p, t, r, c, s='normal'):
+            tke = tk.Entry(p, font=FONT_NORMAL, width=WIDTH_OF_UNIT_LABEL, background="white", justify='center', state=s)
+            tke.insert(0, t)
+            tke.grid(row=r, column=c, pady=1)
+            return tke
+
         # Analog Input Frame
         _parent_frame = tk.LabelFrame(self, text='AnalogInput %d ch'%NUM_CH_AI, font=FONT_LARGE_BOLD)
         for ch in range(NUM_CH_AI):
             _text = 'CH %d (HX711-%d)'% (ch, ch) if ch < int(NUM_CH_AI/2) else 'CH %d (ADS1115-%d)'% (ch, (ch-8)//4)
+            _config = self._config_json['ai'][ch]
+
             _lframe = tk.LabelFrame(_parent_frame, text=_text, font=FONT_BOLD)
             _lframe.grid(row=ch//int(NUM_CH_AI/2), column=ch%int(NUM_CH_AI/2), padx=3, pady=5, sticky='w')
+            
             # Information
             _row = 0
-            _make_info_label(_lframe, "CH Infomation Here", _row, 0)
+            self._entry_ai_info_list.append(_make_info_entry(_lframe, _config['info'], _row, 0))
             # Raw Value
             _row += 1
             _make_type_label(_lframe, 'Raw', _row, 0)
@@ -489,7 +591,7 @@ class Application(tk.Frame):
             _label = _make_digit_label(_lframe)
             _label.grid(row=_row, column=1)
             self._label_ai_phy_list.append(_label)
-            _make_unit_label(_lframe, '___', _row, 2)
+            self._entry_ai_unit_list.append(_make_unit_entry(_lframe, _config['unit'], _row, 2))
             # Voltage Value
             _row += 1
             _make_type_label(_lframe, 'Vlt', _row, 0)
@@ -513,11 +615,14 @@ class Application(tk.Frame):
         for ch in range(NUM_CH_AO):
             _state = 'disabled' if ch >= NUM_CH_AO_LIMIT else 'normal'
             _text = 'CH %d (GP8403-%d)'% (ch, ch//2)
+            _config = self._config_json['ao'][ch]
+
             _lframe = tk.LabelFrame(_parent_frame, text=_text, font=FONT_BOLD)
             _lframe.grid(row=1, column=ch, padx=3, pady=5, sticky='w')
+
             # Information
             _row = 0
-            _make_info_label(_lframe, "CH Infomation Here", _row, 0)
+            self._entry_ao_info_list.append(_make_info_entry(_lframe, _config['info'], _row, 0))
             # Raw Value
             _row += 1
             _make_type_label(_lframe, 'Raw', _row, 0)
@@ -531,128 +636,167 @@ class Application(tk.Frame):
             _label = _make_digit_label_s(_lframe, _state)
             _label.grid(row=_row, column=1)
             self._label_ao_phy_list.append(_label) 
-            _make_unit_label(_lframe, 'V', _row, 2)
-            # Set Value Entry and Button
+            self._entry_ao_unit_list.append(_make_unit_entry(_lframe, _config['unit'], _row, 2))
+            # Voltage Value
             _row += 1
             _make_type_label(_lframe, 'Vlt', _row, 0)
-            _entry = tk.Entry(_lframe, width=WIDTH_OF_DIGIT_LABEL, font=FONT_NORMAL, justify='right', state=_state)
-            _entry.grid(row=_row, column=1)
-            _entry.insert(0, '0')
-            tk.Button(_lframe, text='Set', font=FONT_SMALL, command=lambda ch=ch, entry=_entry: self.set_ao(ch, entry), state=_state).grid(row=_row, column=2)
+            _label = _make_digit_label_s(_lframe, _state)
+            _label.grid(row=_row, column=1)
+            self._label_ao_vlt_list.append(_label)
+            _make_unit_label(_lframe, 'V', _row, 2)
+            # Set Value Entry and Button
+            if DEBUG:
+                _row += 1
+                _make_type_label(_lframe, 'Vlt', _row, 0)
+                _entry = tk.Entry(_lframe, width=WIDTH_OF_DIGIT_LABEL, font=FONT_NORMAL, justify='right', state=_state)
+                _entry.grid(row=_row, column=1)
+                _entry.insert(0, '0')
+                tk.Button(_lframe, text='Set', font=FONT_SMALL, command=lambda ch=ch, entry=_entry: self.set_ao(ch, entry), state=_state).grid(row=_row, column=2)
         _parent_frame.pack(side=tk.TOP, padx=5)
 
         # Parameter Frame
         _parent_frame = tk.LabelFrame(self, text='Parameter', font=FONT_LARGE_BOLD)
         for ch in range(NUM_CH_PARAM):
             _text = 'Param %d'% ch
+            _config = self._config_json['param'][ch]
+
             _lframe = tk.LabelFrame(_parent_frame, text=_text, font=FONT_BOLD)
             _lframe.grid(row=ch//int(NUM_CH_PARAM/2), column=ch%int(NUM_CH_PARAM/2), padx=3, pady=5, sticky='w')
+
             # Information
             _row = 0
-            _make_info_label(_lframe, "CH Infomation Here", _row, 0)
+            self._entry_param_info_list.append(_make_info_entry(_lframe, _config['info'], _row, 0))
             # Physical Value
             _row += 1
             _make_type_label(_lframe, 'Phy', _row, 0)
             _label = _make_digit_label(_lframe)
             _label.grid(row=_row, column=1)
             self._label_param_list.append(_label)
-            _make_unit_label(_lframe, '___',_row, 2)
-
+            self._entry_param_unit_list.append(_make_unit_entry(_lframe, _config['unit'],_row, 2))
         _parent_frame.pack(side=tk.TOP, padx=5)
 
-        _frame = tk.Frame(self, width=1900, relief='raised')
-        if _frame:
-            self._canvas_live = tk.Canvas(_frame, width = 384, height = 216)
-            self._canvas_live.create_rectangle(0, 0, 384+1, 216+1, fill = 'white')
-            self._canvas_live.pack(side=tk.LEFT, padx=10, pady=8)
+        # Calibration Frame
+        _parent_frame = tk.LabelFrame(self, text='Calibration', font=FONT_LARGE_BOLD)
+        if _parent_frame:
+            _row = 0
+            _make_info_label(_parent_frame, 'Phy=A*Raw^2+B*Raw+C', _row, 0)
+            _cb_values = ["AI CH %d"%ch for ch in range(NUM_CH_AI)] + ["AO CH %d"%ch for ch in range(NUM_CH_AO)]
+            # ComboBox
+            _row += 1
+            _cb = ttk.Combobox(_parent_frame, values=_cb_values, state='readonly', font=FONT_NORMAL)
+            # if combobox is selected, update the entry
+            def _update_entry(digit_label:tk.Label, cb:ttk.Combobox, entry_a:tk.Entry, entry_b:tk.Entry, entry_c:tk.Entry):
+                _ch = cb.current()
+                if _ch < NUM_CH_AI:
+                    _a, _b, _c = self._aio.get_ai_calib_value(_ch)
+                    _phy = self._aio.get_ai_data_calibed(_ch)
+                else:
+                    _a, _b, _c = self._aio.get_ao_calib_value(_ch-NUM_CH_AI)
+                    _phy = self._aio.get_ao_data_calibed(_ch-NUM_CH_AI)
+                entry_a.delete(0, tk.END)
+                entry_a.insert(0, self.FMT_STRING_CALIB_FLOAT%_a)
+                entry_b.delete(0, tk.END)
+                entry_b.insert(0, self.FMT_STRING_CALIB_FLOAT%_b)
+                entry_c.delete(0, tk.END)
+                entry_c.insert(0, self.FMT_STRING_CALIB_FLOAT%_c)
+                digit_label.config(text=self.FMT_STRING_FLOAT%_phy)
+            # _cb.bind('<<ComboboxSelected>>', lambda e: _update_entry(_digit, _cb, _entry_a, _entry_b, _entry_c))
+            _cb.grid(row=_row, column=0, columnspan=3, padx=5)
+            # A value
+            _row += 1
+            _make_type_label(_parent_frame, 'A', _row, 0)
+            _entry_a = tk.Entry(_parent_frame, width=WIDTH_OF_DIGIT_LABEL, font=FONT_NORMAL, justify='right')
+            _entry_a.grid(row=_row, column=1)
+            _make_unit_label(_parent_frame, 'f32', _row, 2)
+            # B value
+            _row += 1
+            _make_type_label(_parent_frame, 'B', _row, 0)
+            _entry_b = tk.Entry(_parent_frame, width=WIDTH_OF_DIGIT_LABEL, font=FONT_NORMAL, justify='right')
+            _entry_b.grid(row=_row, column=1)
+            _make_unit_label(_parent_frame, 'f32', _row, 2)
+            # C value
+            _row += 1
+            _make_type_label(_parent_frame, 'C', _row, 0)
+            _entry_c = tk.Entry(_parent_frame, width=WIDTH_OF_DIGIT_LABEL, font=FONT_NORMAL, justify='right')
+            _entry_c.grid(row=_row, column=1)
+            _make_unit_label(_parent_frame, 'f32', _row, 2)
+            # Phy Value
+            _row += 1
+            _make_type_label(_parent_frame, 'Phy', _row, 0)
+            _digit = _make_digit_label(_parent_frame)
+            _digit.grid(row=_row, column=1)
+            _make_unit_label(_parent_frame, 'nan', _row, 2)
 
-            _list = ['time']+['phy_%d'%i for i in range(NUM_CH_AI)]+['param_%d'%i for i in range(NUM_CH_PARAM)]
-            self._x_axis_menu = ttk.Combobox(_frame, values=_list, state='readonly')
-            self._x_axis_menu.current(0)
-            self._x_axis_menu.pack(side=tk.LEFT, padx=10)
-            self._x_axis_menu.bind('<<ComboboxSelected>>', lambda e: self._pipe.send('clear'))
-            self._y_axis_menu = ttk.Combobox(_frame, values=_list, state='readonly')
-            self._y_axis_menu.current(1)
-            self._y_axis_menu.pack(side=tk.LEFT, padx=10)
-            self._y_axis_menu.bind('<<ComboboxSelected>>', lambda e: self._pipe.send('clear'))
-            # self._pulldown_menu = tk.Button(_frame, tearoff=0)
-            # self._pulldown_menu.config(text='Menu')
-            # self._pulldown_menu.add_command(label='Clear', command=lambda: self._msg_queue.put('clear'))
-            # self._pulldown_menu.pack(side=tk.LEFT)
+            _cb.bind('<<ComboboxSelected>>', lambda e: _update_entry(_digit, _cb, _entry_a, _entry_b, _entry_c))
 
-            self._canvas_whole = tk.Canvas(_frame, width = 384, height = 216)
-            self._canvas_whole.create_rectangle(0, 0, 384+1, 216+1, fill = 'green')
-            self._canvas_whole.pack(side=tk.LEFT, padx=10, pady=8)
+            # Preview Button
+            _row += 1
+            def _update_phy(digit_label:tk.Label, cb:ttk.Combobox, entry_a:tk.Entry, entry_b:tk.Entry, entry_c:tk.Entry):
+                _ch = cb.current()
+                if _ch < 0:
+                    return
+                _a = float(entry_a.get())
+                _b = float(entry_b.get())
+                _c = float(entry_c.get())
+                if _ch < NUM_CH_AI:
+                    _x = self._aio.get_ai_data(_ch)
+                    _phy = _x * _a**2 + _x * _b + _c
+                else:
+                    _x = self._aio.get_ao_data(_ch-NUM_CH_AI)
+                    _phy = _x * _a**2 + _x * _b + _c
+                digit_label.config(text=self.FMT_STRING_FLOAT%_phy)
+            _btn = tk.Button(_parent_frame, text='Update', font=FONT_TINY, command=lambda: _update_phy(_digit, _cb, _entry_a, _entry_b, _entry_c))
+            _btn.grid(row=_row, column=0)
+            # Offset Zero Button
+            def _offset_zero_calib(digit_label:tk.Label, cb:ttk.Combobox, entry_a:tk.Entry, entry_b:tk.Entry, entry_c:tk.Entry):
+                _ch = cb.current()
+                if _ch < 0:
+                    return
+                _a = float(entry_a.get())
+                _b = float(entry_b.get())
+                if _ch < NUM_CH_AI:
+                    _x = self._aio.get_ai_data(_ch)
+                    _phy = _x * _a**2 + _x * _b
+                else:
+                    _x = self._aio.get_ao_data(_ch-NUM_CH_AI)
+                    _phy = _x * _a**2 + _x * _b
+                _c = -_phy
+                _phy = _x * _a**2 + _x * _b + _c
+                entry_c.delete(0, tk.END)
+                entry_c.insert(0, self.FMT_STRING_CALIB_FLOAT%_c)
+                digit_label.config(text=_phy)
+            _btn = tk.Button(_parent_frame, text='Offset Zero', font=FONT_TINY, command=lambda: _offset_zero_calib(_label, _cb, _entry_a, _entry_b, _entry_c))
+            _btn.grid(row=_row, column=1)
+            # Set Button
+            def _set_calib(cb:ttk.Combobox, entry_a:tk.Entry, entry_b:tk.Entry, entry_c:tk.Entry):
+                _ch = cb.current()
+                if _ch < 0:
+                    return
+                _a = float(entry_a.get())
+                _b = float(entry_b.get())
+                _c = float(entry_c.get())
+                if _ch < NUM_CH_AI:
+                    self._aio.set_ai_calib_value(_a, _b, _c, _ch)
+                else:
+                    self._aio.set_ao_calib_value(_a, _b, _c, _ch-NUM_CH_AI)
+            _btn = tk.Button(_parent_frame, text='Apply', font=FONT_TINY, command=lambda: _set_calib(_cb, _entry_a, _entry_b, _entry_c))
+            _btn.grid(row=_row, column=2)
+        _parent_frame.pack(side=tk.LEFT, padx=5)
 
-            self._pipe, _pipe_for_child = mp.Pipe()
-            self._plotter = ProcessPlotter()
-            self._plot_process = mp.Process(target=self._plotter, args=(_pipe_for_child,), daemon=True)
-            self._plot_process.start()
-        _frame.pack(side='left')
+        # self.start_save_button = tk.Button(self, text='Start Save', font=FONT_NORMAL, command=self._push_start_button)
+        # self.start_save_button.pack(side=tk.LEFT)
+        # self.stop_save_button = tk.Button(self, text='Stop Save', font=FONT_NORMAL, command=self._push_stop_button, state='disabled')
+        # self.stop_save_button.pack(side=tk.LEFT)
 
-        self.start_save_button = tk.Button(self, text='Start Save', font=FONT_NORMAL, command=self.push_start_button)
-        self.start_save_button.pack(side='left')
-        self.stop_save_button = tk.Button(self, text='Stop Save', font=FONT_NORMAL, command=self.push_stop_button, state='disabled')
-        self.stop_save_button.pack(side='left')
-        
-
-    def push_start_button(self):
+    def _push_start_button(self):
         self.start_save_button.config(state='disabled')
         self._msg_queue.put('save_start')
         self.stop_save_button.config(state='normal')
     
-    def push_stop_button(self):
+    def _push_stop_button(self):
         self.stop_save_button.config(state='disabled')
         self._msg_queue.put('save_stop')
         self.start_save_button.config(state='normal')
-
-class ProcessPlotter:
-    def __init__(self):
-        self.x = []
-        self.y = []
-        self.t0 = 0
-
-    def terminate(self):
-        plt.close('all')
-
-    def __call__(self, pipe):
-        self.pipe = pipe
-        self.fig, self.ax = plt.subplots()
-        
-        while True:#self.pipe.poll():
-            command = self.pipe.recv()
-            if command is None:
-                self.terminate()
-                break
-            if command == 'clear':
-                #self.t0 = time.time()
-                self.x = []
-                self.y = []
-                plt.cla()
-                plt.clf()
-                self.fig, self.ax = plt.subplots(figsize=(384,216), tight_layout=True)
-                #self.fig = plt.figure()
-            else:
-                for i in range(0, len(command), 2):
-                    self.x.append(command[i])
-                    self.y.append(command[i+1])
-                if len(self.x) > 2000:
-                    self.x = self.x[1:]
-                    self.y = self.y[1:]
-
-                self.ax.clear()
-                self.ax.plot(self.x, self.y)
-
-                self.fig.set_size_inches(4.0, 2.15)
-                self.fig.canvas.draw()
-                self.fig.canvas.flush_events()
-                _bio = io.BytesIO()
-                plt.grid()
-                plt.savefig(_bio, format='png')
-                _bio.seek(0)
-
-                self.pipe.send(_bio.read())
-            #print('ProcessPlotter: done')
 
 def main():
     if not os.path.exists(TEMP_DATA_DIR_PATH):
@@ -666,9 +810,7 @@ def main():
 
     root = tk.Tk()
     app = Application(master=root)
-    app.start_background_job()
     app.mainloop()
-    app.stop_background_job()
 
 if __name__ == "__main__":
     main()
