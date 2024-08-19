@@ -1,10 +1,12 @@
-import os, time, copy, json, platform, psutil, datetime
+import os, time, copy, json, platform, psutil, datetime, asyncio
 import tkinter as tk
 import tkinter.ttk as ttk
 
 import threading, queue
 
 import numpy as np
+
+from websockets.sync import server as WSServe
 
 from pymodbus import FramerType
 import pymodbus.client as ModbusClient
@@ -15,12 +17,15 @@ from sqlalchemy.schema import Column
 from sqlalchemy.types import DateTime, Integer, Float, String
 Base = declarative_base()
 
-DEBUG = False
+DEBUG = True
 
 MODBUS_COM_PORT = 'COM11'
 MODBUS_MODE = 'RTU'
 MODBUS_BAUDRATE = 38400
 MODBUS_SLAVE_ADDRESS = 1
+
+WEBSOCKET_PORT = 60080
+WEBSOCKET_HOST = 'localhost' if DEBUG else '0.0.0.0'
 
 NUM_CH_AI = 16
 NUM_CH_AO = 8
@@ -253,11 +258,14 @@ class Application(tk.Frame):
     FMT_STRING_CALIB_FLOAT = '%.6f'
 
     _aio = ThreadSafeAioData()
-    _msg_queue = queue.Queue()
-    _bg_thread = None
+    
     _sql_engine = None
     _sql_db_path = ""
 
+    _webserver_url = "ws://%s:%d"%(WEBSOCKET_HOST, WEBSOCKET_PORT)
+
+    _modbus_thread = None
+    _modbus_msg_queue = queue.Queue()
     _modbus_client = None
     _modbus_client_lock = threading.Lock()
 
@@ -272,11 +280,11 @@ class Application(tk.Frame):
     _label_ao_vlt_list = []
     _label_param_list = []
 
-    _entry_ai_info_list = []
+    _entry_ai_label_list = []
     _entry_ai_unit_list = []
-    _entry_ao_info_list = []
+    _entry_ao_label_list = []
     _entry_ao_unit_list = []
-    _entry_param_info_list = []
+    _entry_param_label_list = []
     _entry_param_unit_list = []
 
     def _on_closing(self):
@@ -287,6 +295,11 @@ class Application(tk.Frame):
     def __init__(self, master=None):
         super().__init__(master)
         self.pack()
+
+        self.master = master
+        self.master.title("Modbus Simple Logger")
+        self.master.geometry("1920x1000")
+        self.master.resizable(False, True)
 
         master.protocol("WM_DELETE_WINDOW", self._on_closing)
 
@@ -302,13 +315,7 @@ class Application(tk.Frame):
             self._aio.set_ao_calib_value(_a, _b, _c, ch)
 
         self._create_widgets()
-
-        self.master.title("Modbus Simple Logger")
-        self.master.geometry("1920x1000")
-        self.master.resizable(False, True)
-
         self._start_background_job()
-
         self.after(200, self._update_display)
 
     def _create_config_json(self):
@@ -316,7 +323,7 @@ class Application(tk.Frame):
         _ai = []
         for ch in range(NUM_CH_AI):
             _ch_data = {}
-            _ch_data['info'] = "AI CH %d INFO"%ch if len(self._entry_ai_info_list)<=ch else self._entry_ai_info_list[ch].get()
+            _ch_data['label'] = "AI CH %d LABEL"%ch if len(self._entry_ai_label_list)<=ch else self._entry_ai_label_list[ch].get()
             _ch_data['unit'] = "nan" if len(self._entry_ai_unit_list)<=ch else self._entry_ai_unit_list[ch].get()
             _ch_data['calib'] = self._aio.get_ai_calib_value(ch)
             _ai.append(_ch_data)
@@ -325,7 +332,7 @@ class Application(tk.Frame):
         _ao = []
         for ch in range(NUM_CH_AO):
             _ch_data = {}
-            _ch_data['info'] = "AO CH %d INFO"%ch if len(self._entry_ao_info_list)<=ch else self._entry_ao_info_list[ch].get()
+            _ch_data['label'] = "AO CH %d LABEL"%ch if len(self._entry_ao_label_list)<=ch else self._entry_ao_label_list[ch].get()
             _ch_data['unit'] = "nan" if len(self._entry_ao_unit_list)<=ch else self._entry_ao_unit_list[ch].get()
             _ch_data['calib'] =  self._aio.get_ao_calib_value(ch)
             _ao.append(_ch_data)
@@ -334,7 +341,7 @@ class Application(tk.Frame):
         _param = []
         for ch in range(NUM_CH_PARAM):
             _ch_data = {}
-            _ch_data['info'] = "Param CH %d INFO"%ch if len(self._entry_param_info_list)<=ch else self._entry_param_info_list[ch].get()
+            _ch_data['label'] = "Param CH %d LABEL"%ch if len(self._entry_param_label_list)<=ch else self._entry_param_label_list[ch].get()
             _ch_data['unit'] = "nan" if len(self._entry_param_unit_list)<=ch else self._entry_param_unit_list[ch].get()
             _param.append(_ch_data)
         ret['param'] = _param
@@ -359,22 +366,24 @@ class Application(tk.Frame):
             self._config_json = self._create_config_json()
 
     def _start_background_job(self):
-        if self._bg_thread:
+        if self._modbus_thread:
             # Already started
             return
-        self._bg_thread = threading.Thread(target=self._background_thread, daemon=True)
-        self._bg_thread.start()
-        self._msg_queue.put(self.BG_CMD_MODBUS_START)
-        self._msg_queue.put(self.BG_CMD_AO_SEND)
-        self._msg_queue.put(self.BG_CMD_AI_RECEIVE)
+        self._modbus_thread = threading.Thread(target=self._modbus_bg_thread, daemon=True)
+        self._modbus_thread.start()
+        self._modbus_msg_queue.put(self.BG_CMD_MODBUS_START)
+        self._modbus_msg_queue.put(self.BG_CMD_AO_SEND)
+        self._modbus_msg_queue.put(self.BG_CMD_AI_RECEIVE)
+
+        threading.Thread(target=self._webserver_bg_thread, daemon=True).start()
 
     def _stop_background_job(self):
-        if not self._bg_thread:
+        if not self._modbus_thread:
             # Already stopped
             return
-        self._msg_queue.put(self.BG_CMD_MODBUS_STOP)
-        self._msg_queue.put(self.BG_CMD_TERMINATE)
-        self._bg_thread.join()
+        self._modbus_msg_queue.put(self.BG_CMD_MODBUS_STOP)
+        self._modbus_msg_queue.put(self.BG_CMD_TERMINATE)
+        self._modbus_thread.join()
 
     def _save_data_to_db(self):
         if self._sql_engine:
@@ -394,7 +403,7 @@ class Application(tk.Frame):
                 print('Background: Failed to save data')
                 print(e)
 
-    def _background_calc_param(self):
+    def _modbus_bg_calc_param(self):
         try:
             _previous = self._aio.get_param_value_all()
 
@@ -414,13 +423,59 @@ class Application(tk.Frame):
             print('Background: Failed to calc param')
             print(e)
 
-    def _background_thread(self):
+    def _webserver_handler(self, websocket):
+        while True:
+            ret = {
+                'time': datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S.%f'),
+                'num_ch_ai': NUM_CH_AI, 'num_ch_ao': NUM_CH_AO, 'num_ch_param': NUM_CH_PARAM,
+                'modbus': {
+                    'com_port': MODBUS_COM_PORT,
+                    'mode': MODBUS_MODE,
+                    'baudrate': MODBUS_BAUDRATE,
+                    'slave_address': MODBUS_SLAVE_ADDRESS,
+                },
+                'ai': [],
+                'ao': [],
+                'param': [],
+            }
+            for ch in range(NUM_CH_AI):
+                _data = {
+                    'raw': int(self._aio.get_ai_data(ch)),
+                    'phy': float(self._aio.get_ai_data_calibed(ch)),
+                    'label': self._entry_ai_label_list[ch].get(),
+                    'unit': self._entry_ai_unit_list[ch].get(),
+                }
+                ret['ai'].append(_data)
+            for ch in range(NUM_CH_AO):
+                _data = {
+                    'raw': int(self._aio.get_ao_data(ch)),
+                    'phy': float(self._aio.get_ao_data_calibed(ch)),
+                    'label': self._entry_ao_label_list[ch].get(),
+                    'unit': self._entry_ao_unit_list[ch].get(),
+                }
+                ret['ao'].append(_data)
+            for ch in range(NUM_CH_PARAM):
+                _data = {
+                    'phy': float(self._aio.get_param_value(ch)),
+                    'label': self._entry_param_label_list[ch].get(),
+                    'unit': self._entry_param_unit_list[ch].get(),
+                }
+                ret['param'].append(_data)
+            
+            websocket.send(json.dumps(ret))
+            time.sleep(1)
+
+    def _webserver_bg_thread(self):
+        with WSServe.serve(self._webserver_handler, WEBSOCKET_HOST, WEBSOCKET_PORT) as server:
+            server.serve_forever()
+
+    def _modbus_bg_thread(self):
         base_time = time.time()
         next_time = 0
         interval = 0.100
 
         while True:
-            msg = self._msg_queue.get()
+            msg = self._modbus_msg_queue.get()
             match msg:
                 case self.BG_CMD_TERMINATE:
                     break
@@ -454,9 +509,9 @@ class Application(tk.Frame):
                 case self.BG_CMD_AI_RECEIVE:
                     self._sync_ai_all()
                     self._save_data_to_db()
-                    self._background_calc_param()
+                    self._modbus_bg_calc_param()
                     next_time = ((base_time - time.time()) % interval) or interval
-                    threading.Timer(next_time, lambda: self._msg_queue.put(self.BG_CMD_AI_RECEIVE)).start()
+                    threading.Timer(next_time, lambda: self._modbus_msg_queue.put(self.BG_CMD_AI_RECEIVE)).start()
                 case _:
                     print('Background: Unknown message')
 
@@ -517,16 +572,16 @@ class Application(tk.Frame):
 
         self.after(200, self._update_display)
 
-    def _set_ao(self, ch, entry):
-        try:
-            _x = float(entry.get())
-            _x = np.uint16(_x*1000)
-            if _x < 0 or _x > 10000:
-                raise ValueError('Invalid value')
-            self._aio.set_ao_data(_x, ch)
-            self._msg_queue.put(self.BG_CMD_AO_SEND)
-        except ValueError as e:
-            pass
+    # def _set_ao(self, ch, entry):
+    #     try:
+    #         _x = float(entry.get())
+    #         _x = np.uint16(_x*1000)
+    #         if _x < 0 or _x > 10000:
+    #             raise ValueError('Invalid value')
+    #         self._aio.set_ao_data(_x, ch)
+    #         self._modbus_msg_queue.put(self.BG_CMD_AO_SEND)
+    #     except ValueError as e:
+    #         pass
 
     def _create_widgets(self):
         FONT_NAME = 'Consolas'
@@ -534,7 +589,7 @@ class Application(tk.Frame):
         WIDTH_OF_TYPE_LABEL = 4
         WIDTH_OF_DIGIT_LABEL = 12
         WIDTH_OF_UNIT_LABEL = 5
-        WIDTH_OF_INFO_LABEL = 21
+        WIDTH_OF_LABEL_LABEL = 21
 
         FONT_SIZE_NORMAL = 14
         FONT_SIZE_LARGE = 20
@@ -551,10 +606,10 @@ class Application(tk.Frame):
         _make_normal_label =  lambda p, t, w, r, c: tk.Label(p, text=t, font=FONT_NORMAL, width=w).grid(row=r, column=c)
         _make_type_label =    lambda p, t, r, c: _make_normal_label(p, t, WIDTH_OF_TYPE_LABEL, r, c)
         _make_unit_label =    lambda p, t, r, c: _make_normal_label(p, t, WIDTH_OF_UNIT_LABEL, r, c)
-        _make_info_label  =   lambda p, t, r, c:  tk.Label(p, text=t, font=FONT_NORMAL, width=WIDTH_OF_INFO_LABEL).grid(row=r, column=c, columnspan=3)
+        _make_label_label  =   lambda p, t, r, c:  tk.Label(p, text=t, font=FONT_NORMAL, width=WIDTH_OF_LABEL_LABEL).grid(row=r, column=c, columnspan=3)
 
-        def _make_info_entry(p, t, r, c):
-            tke = tk.Entry(p, font=FONT_NORMAL, width=WIDTH_OF_INFO_LABEL, background="white", justify='center')
+        def _make_label_entry(p, t, r, c):
+            tke = tk.Entry(p, font=FONT_NORMAL, width=WIDTH_OF_LABEL_LABEL, background="white", justify='center')
             tke.insert(0, t)
             tke.grid(row=r, column=c, columnspan=3, pady=1)
             return tke
@@ -573,9 +628,9 @@ class Application(tk.Frame):
             _lframe = tk.LabelFrame(_parent_frame, text=_text, font=FONT_BOLD)
             _lframe.grid(row=ch//int(NUM_CH_AI/2), column=ch%int(NUM_CH_AI/2), padx=3, pady=5, sticky='w')
             
-            # Information
+            # Label for Channel
             _row = 0
-            self._entry_ai_info_list.append(_make_info_entry(_lframe, _config['info'], _row, 0))
+            self._entry_ai_label_list.append(_make_label_entry(_lframe, _config['label'], _row, 0))
             # Raw Value
             _row += 1
             _make_type_label(_lframe, 'Raw', _row, 0)
@@ -618,9 +673,9 @@ class Application(tk.Frame):
             _lframe = tk.LabelFrame(_parent_frame, text=_text, font=FONT_BOLD)
             _lframe.grid(row=1, column=ch, padx=3, pady=5, sticky='w')
 
-            # Information
+            # Label for Channel
             _row = 0
-            self._entry_ao_info_list.append(_make_info_entry(_lframe, _config['info'], _row, 0))
+            self._entry_ao_label_list.append(_make_label_entry(_lframe, _config['label'], _row, 0))
             # Raw Value
             _row += 1
             _make_type_label(_lframe, 'Raw', _row, 0)
@@ -642,14 +697,14 @@ class Application(tk.Frame):
             _label.grid(row=_row, column=1)
             self._label_ao_vlt_list.append(_label)
             _make_unit_label(_lframe, 'V', _row, 2)
-            # Set Value Entry and Button
-            if DEBUG:
-                _row += 1
-                _make_type_label(_lframe, 'Vlt', _row, 0)
-                _entry = tk.Entry(_lframe, width=WIDTH_OF_DIGIT_LABEL, font=FONT_NORMAL, justify='right', state=_state)
-                _entry.grid(row=_row, column=1)
-                _entry.insert(0, '0')
-                tk.Button(_lframe, text='Set', font=FONT_SMALL, command=lambda ch=ch, entry=_entry: self.set_ao(ch, entry), state=_state).grid(row=_row, column=2)
+            # # Set Value Entry and Button
+            # if DEBUG:
+            #     _row += 1
+            #     _make_type_label(_lframe, 'Vlt', _row, 0)
+            #     _entry = tk.Entry(_lframe, width=WIDTH_OF_DIGIT_LABEL, font=FONT_NORMAL, justify='right', state=_state)
+            #     _entry.grid(row=_row, column=1)
+            #     _entry.insert(0, '0')
+            #     tk.Button(_lframe, text='Set', font=FONT_SMALL, command=lambda ch=ch, entry=_entry: self.set_ao(ch, entry), state=_state).grid(row=_row, column=2)
         _parent_frame.pack(side=tk.TOP, padx=5)
 
         # Parameter Frame
@@ -661,9 +716,9 @@ class Application(tk.Frame):
             _lframe = tk.LabelFrame(_parent_frame, text=_text, font=FONT_BOLD)
             _lframe.grid(row=ch//int(NUM_CH_PARAM/2), column=ch%int(NUM_CH_PARAM/2), padx=3, pady=5, sticky='w')
 
-            # Information
+            # Label for Channel
             _row = 0
-            self._entry_param_info_list.append(_make_info_entry(_lframe, _config['info'], _row, 0))
+            self._entry_param_label_list.append(_make_label_entry(_lframe, _config['label'], _row, 0))
             # Physical Value
             _row += 1
             _make_type_label(_lframe, 'Phy', _row, 0)
@@ -677,7 +732,7 @@ class Application(tk.Frame):
         _parent_frame = tk.LabelFrame(self, text='Calibration', font=FONT_LARGE_BOLD)
         if _parent_frame:
             _row = 0
-            _make_info_label(_parent_frame, 'Phy=A*Raw^2+B*Raw+C', _row, 0)
+            _make_label_label(_parent_frame, 'Phy=A*Raw^2+B*Raw+C', _row, 0)
             _cb_values = ["AI CH %d"%ch for ch in range(NUM_CH_AI)] + ["AO CH %d"%ch for ch in range(NUM_CH_AO)]
             # ComboBox
             _row += 1
@@ -781,6 +836,18 @@ class Application(tk.Frame):
             _btn.grid(row=_row, column=2)
         _parent_frame.pack(side=tk.LEFT, padx=5)
 
+        # Information Frame
+        _parent_frame = tk.LabelFrame(self, text='Information', font=FONT_LARGE_BOLD)
+        if _parent_frame:
+            # websocket url
+            _row = 0
+            _text = ""
+            _text += "Websocket URL: %s"%self._webserver_url
+            _text += "\n"
+            _text += "Modbus Info: PORT:%s, Mode:%s, Baudrate:%d, Slave:%d"%(MODBUS_COM_PORT, MODBUS_MODE, MODBUS_BAUDRATE, MODBUS_SLAVE_ADDRESS)
+            tk.Label(_parent_frame, text=_text, font=FONT_NORMAL, anchor="n").pack(side=tk.LEFT)
+        _parent_frame.pack(side=tk.LEFT, padx=5)
+
         # self.start_save_button = tk.Button(self, text='Start Save', font=FONT_NORMAL, command=self._push_start_button)
         # self.start_save_button.pack(side=tk.LEFT)
         # self.stop_save_button = tk.Button(self, text='Stop Save', font=FONT_NORMAL, command=self._push_stop_button, state='disabled')
@@ -788,12 +855,12 @@ class Application(tk.Frame):
 
     def _push_start_button(self):
         self.start_save_button.config(state='disabled')
-        self._msg_queue.put('save_start')
+        self._modbus_msg_queue.put('save_start')
         self.stop_save_button.config(state='normal')
     
     def _push_stop_button(self):
         self.stop_save_button.config(state='disabled')
-        self._msg_queue.put('save_stop')
+        self._modbus_msg_queue.put('save_stop')
         self.start_save_button.config(state='normal')
 
 def main():
