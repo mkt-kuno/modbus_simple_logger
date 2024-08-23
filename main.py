@@ -442,11 +442,11 @@ class Application(tk.Frame):
                         ["ao_phy_%d"%i for i in range(NUM_CH_AO)] + \
                         ["ao_vlt_%d"%i for i in range(NUM_CH_AO)] + \
                         ["param_phy_%d"%i for i in range(NUM_CH_PARAM)]
-            json_label = {}
-            json_unit = {}
+            json_label = {"time": "Time"}
+            json_unit = {"time": None }
             json_data = {
                 'index': -1, 
-                'time': datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S.%f'),
+                'time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'),
             }
             for ch in range(NUM_CH_AI):
                 _label = self._entry_ai_label_list[ch].get()
