@@ -1,0 +1,65 @@
+{
+    "env":{
+        "version": "1.0.0",
+        "csv_path": "C://data/output.csv",
+        "sqlite3_path": "C://data/output.sqlite3",
+        "modbus_port": "COM3",
+        "modbus_baudrate": 9600,
+        "modbus_slave_id": 1
+    },
+    "key":[
+        "index",
+        "time",
+        "state",
+        "control_id",
+        "ai_raw_0", "ai_phy_0",
+        "ao_raw_0", "ao_phy_0",
+        "param_phy_0"
+    ],
+    "label":{
+        "ai_raw_0": "Loadcell Vertical",
+        "ai_phy_0": "Loadcell Vertical",
+        "ao_phy_0": "EP Cell",
+        "param_phy_0": "Volumetric change"
+    },
+    "unit":{
+        "ai_phy_0": "g",
+        "ao_phy_0": "V",
+        "param_phy_0": ""
+    },
+    "data":[
+        {
+            "index": 0,
+            "time": "1999/1/1 14:10:10.123010",
+            "state": "save",
+            "control_id": 0,
+            "ai_raw_0": 2317,
+            "ai_phy_0": 157.327,
+            "ao_raw_0": 1000,
+            "ao_phy_0": 1000,
+            "param_phy_0": 1.0
+        },
+        {
+            "index": 1,
+            "time": "1999/1/1 14:10:10.223010",
+            "state": "save",
+            "control_id": 0,
+            "ai_raw_0": 2317,
+            "ai_phy_0": 157.327,
+            "ao_raw_0": 1000,
+            "ao_phy_0": 1000,
+            "param_phy_0": 1.0
+        },
+        {
+            "index": 2,
+            "time": "1999/1/1 14:10:10.323010",
+            "state": "save&control",
+            "control_id": 1,
+            "ai_raw_0": 2317,
+            "ai_phy_0": 180.327,
+            "ao_raw_0": 1000,
+            "ao_phy_0": 1000,
+            "param_phy_0": 1.0
+        }
+    ]
+}

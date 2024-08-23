@@ -79,7 +79,7 @@ class TableAio(Base):
     ao_raw_5 = Column(Integer)
     ao_raw_6 = Column(Integer)
     ao_raw_7 = Column(Integer)
-    ao_raw_0 = Column(Float)
+    ao_phy_0 = Column(Float)
     ao_phy_1 = Column(Float)
     ao_phy_2 = Column(Float)
     ao_phy_3 = Column(Float)
@@ -87,22 +87,22 @@ class TableAio(Base):
     ao_phy_5 = Column(Float)
     ao_phy_6 = Column(Float)
     ao_phy_7 = Column(Float)
-    param_0 = Column(Float)
-    param_1 = Column(Float)
-    param_2 = Column(Float)
-    param_3 = Column(Float)
-    param_4 = Column(Float)
-    param_5 = Column(Float)
-    param_6 = Column(Float)
-    param_7 = Column(Float)
-    param_8 = Column(Float)
-    param_9 = Column(Float)
-    param_10 = Column(Float)
-    param_11 = Column(Float)
-    param_12 = Column(Float)
-    param_13 = Column(Float)
-    param_14 = Column(Float)
-    param_15 = Column(Float)
+    param_phy_0 = Column(Float)
+    param_phy_1 = Column(Float)
+    param_phy_2 = Column(Float)
+    param_phy_3 = Column(Float)
+    param_phy_4 = Column(Float)
+    param_phy_5 = Column(Float)
+    param_phy_6 = Column(Float)
+    param_phy_7 = Column(Float)
+    param_phy_8 = Column(Float)
+    param_phy_9 = Column(Float)
+    param_phy_10 = Column(Float)
+    param_phy_11 = Column(Float)
+    param_phy_12 = Column(Float)
+    param_phy_13 = Column(Float)
+    param_phy_14 = Column(Float)
+    param_phy_15 = Column(Float)
 
 class ThreadSafeAioData():
     def __init__(self):
@@ -278,7 +278,7 @@ class Application(tk.Frame):
     _label_ao_raw_list = []
     _label_ao_phy_list = []
     _label_ao_vlt_list = []
-    _label_param_list = []
+    _label_param_phy_list = []
 
     _entry_ai_label_list = []
     _entry_ai_unit_list = []
@@ -425,43 +425,72 @@ class Application(tk.Frame):
 
     def _webserver_handler(self, websocket):
         while True:
-            ret = {
+            json_env = {
+                "version": "1.0",
+                'num_ch_ai': NUM_CH_AI,
+                'num_ch_ao': NUM_CH_AO,
+                'num_ch_param': NUM_CH_PARAM,
+                'modbus_com_port': MODBUS_COM_PORT,
+                'modbus_mode': MODBUS_MODE,
+                'modbus_baudrate': MODBUS_BAUDRATE,
+                'modbus_slave_address': MODBUS_SLAVE_ADDRESS,
+            }
+            json_key =  ["index", "time"] + \
+                        ["ai_raw_%d"%i for i in range(NUM_CH_AI)] + \
+                        ["ai_phy_%d"%i for i in range(NUM_CH_AI)] + \
+                        ["ao_raw_%d"%i for i in range(NUM_CH_AO)] + \
+                        ["ao_phy_%d"%i for i in range(NUM_CH_AO)] + \
+                        ["ao_vlt_%d"%i for i in range(NUM_CH_AO)] + \
+                        ["param_phy_%d"%i for i in range(NUM_CH_PARAM)]
+            json_label = {}
+            json_unit = {}
+            json_data = {
+                'index': -1, 
                 'time': datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S.%f'),
-                'num_ch_ai': NUM_CH_AI, 'num_ch_ao': NUM_CH_AO, 'num_ch_param': NUM_CH_PARAM,
-                'modbus': {
-                    'com_port': MODBUS_COM_PORT,
-                    'mode': MODBUS_MODE,
-                    'baudrate': MODBUS_BAUDRATE,
-                    'slave_address': MODBUS_SLAVE_ADDRESS,
-                },
-                'ai': [],
-                'ao': [],
-                'param': [],
             }
             for ch in range(NUM_CH_AI):
-                _data = {
-                    'raw': int(self._aio.get_ai_data(ch)),
-                    'phy': float(self._aio.get_ai_data_calibed(ch)),
-                    'label': self._entry_ai_label_list[ch].get(),
-                    'unit': self._entry_ai_unit_list[ch].get(),
-                }
-                ret['ai'].append(_data)
+                _label = self._entry_ai_label_list[ch].get()
+                json_label['ai_raw_%d'%ch] = _label
+                json_data['ai_raw_%d'%ch] = int(self._aio.get_ai_data(ch))
+                json_unit['ai_raw_%d'%ch] = 'i16'
+
+                json_label['ai_phy_%d'%ch] = _label
+                json_unit['ai_phy_%d'%ch] = self._entry_ai_unit_list[ch].get()
+                json_data['ai_phy_%d'%ch] = float(self._aio.get_ai_data_calibed(ch))
+
+                json_label['ai_vlt_%d'%ch] = _label
+                if ch < int(NUM_CH_AI/2):
+                    json_unit['ai_vlt_%d'%ch] = 'mV'
+                    json_data['ai_vlt_%d'%ch] = self._convert_hx711_raw2vlt(int(self._aio.get_ai_data(ch)))
+                else:
+                    json_unit['ai_vlt_%d'%ch] = 'V'
+                    json_data['ai_vlt_%d'%ch] = self._convert_ads1115_raw2vlt(int(self._aio.get_ai_data(ch)))
+
             for ch in range(NUM_CH_AO):
-                _data = {
-                    'raw': int(self._aio.get_ao_data(ch)),
-                    'phy': float(self._aio.get_ao_data_calibed(ch)),
-                    'label': self._entry_ao_label_list[ch].get(),
-                    'unit': self._entry_ao_unit_list[ch].get(),
-                }
-                ret['ao'].append(_data)
+                _label = self._entry_ao_label_list[ch].get()
+                json_label['ao_raw_%d'%ch] = _label
+                json_unit['ao_raw_%d'%ch] = 'i16'
+                json_data['ao_raw_%d'%ch] = int(self._aio.get_ao_data(ch))
+
+                json_label['ao_phy_%d'%ch] = _label
+                json_unit['ao_phy_%d'%ch] = self._entry_ao_unit_list[ch].get()
+                json_data['ao_phy_%d'%ch] = float(self._aio.get_ao_data_calibed(ch))
+
+                json_label['ao_vlt_%d'%ch] = _label
+                json_unit['ao_vlt_%d'%ch] = 'V'
+                json_data['ao_vlt_%d'%ch] = self._convert_gp8403_raw2vlt(self._aio.get_ao_data(ch))
             for ch in range(NUM_CH_PARAM):
-                _data = {
-                    'phy': float(self._aio.get_param_value(ch)),
-                    'label': self._entry_param_label_list[ch].get(),
-                    'unit': self._entry_param_unit_list[ch].get(),
-                }
-                ret['param'].append(_data)
+                json_label['param_phy_%d'%ch] = self._entry_param_label_list[ch].get()
+                json_unit['param_phy_%d'%ch] = self._entry_param_unit_list[ch].get()
+                json_data['param_phy_%d'%ch] = float(self._aio.get_param_value(ch))
             
+            ret = {
+                'env': json_env,
+                'key': json_key,
+                'label': json_label,
+                'unit': json_unit,
+                'data': [json_data],
+            }
             websocket.send(json.dumps(ret))
             time.sleep(1)
 
@@ -537,6 +566,18 @@ class Application(tk.Frame):
             print('sync_ao_all, Failed to write')
             print(e)
 
+    def _convert_hx711_raw2vlt(self, raw:int):
+        return float(raw)/32768.0/128.0/2*1E3*self.HX711_VOLTAGE
+    
+    def _convert_hx711_raw2ust(self, raw:int):
+        return float(raw)/32768.0/128.0/2*1E3*2E3
+
+    def _convert_ads1115_raw2vlt(self, raw:int):
+        return float(raw)/32768.0*6.144
+    
+    def _convert_gp8403_raw2vlt(self, raw:int):
+        return float(raw)/1000.0
+
     def _update_display(self):
         ao = self._aio.get_ao_data_all()
         ai = self._aio.get_ai_data_all()
@@ -549,26 +590,26 @@ class Application(tk.Frame):
             _raw = ai[ch]
             _phy = aic[ch]
             if ch < int(NUM_CH_AI/2):
-                _vlt = float(_raw)/32768.0/128.0/2*1E3*self.HX711_VOLTAGE
-                _ust = float(_raw)/32768.0/128.0/2*1E3*2E3
+                _vlt = self._convert_hx711_raw2vlt(_raw)
+                _ust = self._convert_hx711_raw2ust(_raw)
                 self._label_ai_vlt_list[ch].config(text=self.FMT_STRING_FLOAT%_vlt)
                 self._label_ai_ust_list[ch].config(text=self.FMT_STRING_FLOAT%_ust)
             else:
-                _vlt = float(_raw)/32768.0*6.144
+                _vlt = self._convert_ads1115_raw2vlt(_raw)
                 self._label_ai_vlt_list[ch].config(text=self.FMT_STRING_FLOAT%_vlt)
             self._label_ai_phy_list[ch].config(text=self.FMT_STRING_FLOAT%_phy)
         
         for ch in range(NUM_CH_AO):
             _raw = int(ao[ch])
             _phy = float(aoc[ch])
-            _vlt = float(ao[ch])/1000.0
+            _vlt = self._convert_gp8403_raw2vlt(ao[ch])
             self._label_ao_raw_list[ch].config(text=_raw)
             self._label_ao_phy_list[ch].config(text=self.FMT_STRING_FLOAT%_phy)
             self._label_ao_vlt_list[ch].config(text=self.FMT_STRING_FLOAT%_vlt)
 
         for ch in range(NUM_CH_PARAM):
             _phy = float(par[ch])
-            self._label_param_list[ch].config(text=self.FMT_STRING_FLOAT%_phy)
+            self._label_param_phy_list[ch].config(text=self.FMT_STRING_FLOAT%_phy)
 
         self.after(200, self._update_display)
 
@@ -724,7 +765,7 @@ class Application(tk.Frame):
             _make_type_label(_lframe, 'Phy', _row, 0)
             _label = _make_digit_label(_lframe)
             _label.grid(row=_row, column=1)
-            self._label_param_list.append(_label)
+            self._label_param_phy_list.append(_label)
             self._entry_param_unit_list.append(_make_unit_entry(_lframe, _config['unit'],_row, 2))
         _parent_frame.pack(side=tk.TOP, padx=5)
 
