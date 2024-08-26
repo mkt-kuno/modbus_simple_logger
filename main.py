@@ -117,29 +117,29 @@ class ThreadSafeAioData():
         self._ao_calib_c = np.array([0.0]*NUM_CH_AO, dtype=np.float32)
         self._param = np.array([0.0]*NUM_CH_PARAM, dtype=np.float32)
 
-    def get_param_phy(self, ch:int):
+    def get_param_phy(self, ch:int) -> float:
         if ch < 0 or ch >= NUM_CH_PARAM:
             raise ValueError('Invalid channel')
         with self._lock:
-            return self._param[ch]
+            return float(self._param[ch])
 
     def set_param_phy(self, value:float, ch:int):
         if ch < 0 or ch >= NUM_CH_PARAM:
             raise ValueError('Invalid channel')
         with self._lock:
-            self._param[ch] = value
+            self._param[ch] = np.float32(value)
 
-    def get_param_phy_all(self):
+    def get_param_phy_all(self) -> float:
         with self._lock:
-            return copy.deepcopy(self._param)
+            return self._param.tolist()
 
-    def set_param_phy_all(self, data:np.ndarray):
-        if data.shape != (NUM_CH_PARAM,):
+    def set_param_phy_all(self, data:list):
+        if len(data) != NUM_CH_PARAM:
             raise ValueError('Invalid data shape')
         with self._lock:
-            self._param = copy.deepcopy(data)
+            self._param = np.array(data)
 
-    def get_ai_calib(self, ch:int):
+    def get_ai_calib(self, ch:int) -> tuple:
         if ch < 0 or ch >= NUM_CH_AI:
             raise ValueError('Invalid channel')
         with self._lock:
@@ -153,7 +153,7 @@ class ThreadSafeAioData():
             self._ai_calib_b[ch] = b
             self._ai_calib_c[ch] = c
 
-    def get_ao_calib(self, ch:int):
+    def get_ao_calib(self, ch:int) -> tuple:
         if ch < 0 or ch >= NUM_CH_AO:
             raise ValueError('Invalid channel')
         with self._lock:
@@ -167,7 +167,7 @@ class ThreadSafeAioData():
             self._ao_calib_b[ch] = b
             self._ao_calib_c[ch] = c
 
-    def get_ai_phy(self, ch:int):
+    def get_ai_phy(self, ch:int) -> float:
         if ch < 0 or ch >= NUM_CH_AI:
             raise ValueError('Invalid channel')
         with self._lock:
@@ -175,17 +175,17 @@ class ThreadSafeAioData():
             _a = self._ai_calib_a[ch]
             _b = self._ai_calib_b[ch]
             _c = self._ai_calib_c[ch]
-            return (_x * _a**2 + _x * _b + _c)
+            return float(_x * _a**2 + _x * _b + _c)
 
-    def get_ai_phy_all(self):
+    def get_ai_phy_all(self) -> list:
         with self._lock:
             _x = self._ai
             _a = self._ai_calib_a
             _b = self._ai_calib_b
             _c = self._ai_calib_c
-            return (_x * _a**2 + _x * _b + _c)
+            return (_x * _a**2 + _x * _b + _c).tolist()
 
-    def get_ao_phy(self, ch:int):
+    def get_ao_phy(self, ch:int) -> float:
         if ch < 0 or ch >= NUM_CH_AO:
             raise ValueError('Invalid channel')
         with self._lock:
@@ -193,59 +193,59 @@ class ThreadSafeAioData():
             _a = self._ao_calib_a[ch]
             _b = self._ao_calib_b[ch]
             _c = self._ao_calib_c[ch]
-            return (_x * _a**2 + _x * _b + _c)
+            return float(_x * _a**2 + _x * _b + _c)
     
-    def get_ao_phy_all(self):
+    def get_ao_phy_all(self) -> list:
         with self._lock:
             _x = self._ao
             _a = self._ao_calib_a
             _b = self._ao_calib_b
             _c = self._ao_calib_c
-            return (_x * _a**2 + _x * _b + _c)
+            return (_x * _a**2 + _x * _b + _c).tolist()
 
-    def get_ai_raw(self, ch:int) -> np.int16:
+    def get_ai_raw(self, ch:int) -> int:
         if ch < 0 or ch >= NUM_CH_AI:
             raise ValueError('Invalid channel')
         with self._lock:
-            return copy.deepcopy(self._ai[ch])
+            return int(self._ai[ch])
 
-    def get_ai_raw_all(self):
+    def get_ai_raw_all(self) -> list:
         with self._lock:
-            return copy.deepcopy(self._ai)
+            return self._ai.tolist()
 
-    def set_ai_raw(self, data:np.int16, ch:int):
+    def set_ai_raw(self, data:int, ch:int):
         if ch < 0 or ch >= NUM_CH_AI:
             raise ValueError('Invalid channel')
         with self._lock:
-            self._ai[ch] = copy.deepcopy(np.int16(data))
+            self._ai[ch] = np.int16(data)
 
-    def set_ai_raw_all(self, data:np.ndarray):
-        if data.shape != (NUM_CH_AI,):
+    def set_ai_raw_all(self, data:list):
+        if len(data) != NUM_CH_AI:
             raise ValueError('Invalid data shape')
         with self._lock:
-            self._ai = copy.deepcopy(data)
+            self._ai = np.array(data)
 
     def get_ao_raw(self, ch:int):
         if ch < 0 or ch >= NUM_CH_AO:
             raise ValueError('Invalid channel')
         with self._lock:
-            return copy.deepcopy(self._ao[ch])
+            return int(self._ao[ch])
 
-    def get_ao_data_all(self) -> np.uint16:
+    def get_ao_data_all(self) -> list:
         with self._lock:
-            return copy.deepcopy(self._ao)
+            return copy.deepcopy(self._ao).tolist()
 
-    def set_ao_raw(self, data:np.uint16, ch:int):
+    def set_ao_raw(self, data:int, ch:int):
         if ch < 0 or ch >= NUM_CH_AO:
             raise ValueError('Invalid channel')
         with self._lock:
-            self._ao[ch] = copy.deepcopy(np.uint16(data))
+            self._ao[ch] = np.uint16(data)
         
-    def set_ao_raw_all(self, data:np.ndarray):
-        if data.shape != (NUM_CH_AO,):
+    def set_ao_raw_all(self, data:list):
+        if len(data) != NUM_CH_AO:
             raise ValueError('Invalid data shape')
         with self._lock:
-            self._ao = copy.deepcopy(data)
+            self._ao = np.array(np.data)
 
 # Create a new thread for ModbusRTU
 class Application(tk.Frame):
@@ -256,6 +256,8 @@ class Application(tk.Frame):
     BG_CMD_TERMINATE = 'terminate'
     BG_CMD_AO_SEND = 'ao_send'
     BG_CMD_AI_RECEIVE = 'ai_receive'
+    BG_CMD_CHANGE_INTERVAL = 'change_interval'
+    BG_CMD_SAVE_SQL = 'save_sql'
 
     DEFALUT_CONFIG_JSON_NAME = 'config.json'
 
@@ -263,10 +265,13 @@ class Application(tk.Frame):
     FMT_STRING_FLOAT = '%.3f'
     FMT_STRING_CALIB_FLOAT = '%.6f'
 
+    _display_update_interval_ms = 100
+
     _aio = ThreadSafeAioData()
     
     _sql_engine = None
     _sql_db_path = ""
+    _sql_save_interval_ms = 100
 
     _webserver_url = "ws://%s:%d"%(WEBSOCKET_HOST, WEBSOCKET_PORT)
 
@@ -274,6 +279,7 @@ class Application(tk.Frame):
     _modbus_msg_queue = queue.Queue()
     _modbus_client = None
     _modbus_client_lock = threading.Lock()
+    _modbus_interval_ms = 100
 
     _pipe_is_wainting = False
 
@@ -322,7 +328,7 @@ class Application(tk.Frame):
 
         self._create_widgets()
         self._start_background_job()
-        self.after(200, self._update_display)
+        self.after(self._display_update_interval_ms, self._update_display)
 
     def _create_config_json(self):
         ret = {}
@@ -412,8 +418,10 @@ class Application(tk.Frame):
     def _modbus_bg_calc_param(self):
         try:
             _previous = self._aio.get_param_phy_all()
-
+            
+            ########################################################################################################
             ## @todo implement your own calculation
+            ########################################################################################################
             for ch in range(NUM_CH_PARAM):
                 if ch < 4:
                     _previous[ch] = np.sin(time.time()/3.14)
@@ -423,7 +431,10 @@ class Application(tk.Frame):
                     _previous[ch] = 1.0 if np.sin(time.time()/3.14) > 0.0 else -1
                 else:
                     _previous[ch] = _previous[ch] + 0.01 if _previous[ch]+0.01 < 1 else -1
-            
+            ########################################################################################################
+            ########################################################################################################
+            ########################################################################################################
+
             self._aio.set_param_phy_all(_previous)
         except Exception as e:
             print('Background: Failed to calc param')
@@ -505,9 +516,9 @@ class Application(tk.Frame):
             server.serve_forever()
 
     def _modbus_bg_thread(self):
-        base_time = time.time()
-        next_time = 0
-        interval = 0.100
+        _base_time = time.time()
+        _modbus_interval_ms = self._modbus_interval_ms
+        _sql_save_interval_ms = self._sql_save_interval_ms
 
         while True:
             msg = self._modbus_msg_queue.get()
@@ -532,6 +543,12 @@ class Application(tk.Frame):
                         Base.metadata.create_all(self._sql_engine)
                         print('Background: Database created')
                         print('Background: Database path: %s'%self._sql_db_path)
+                        threading.Timer(next_time, lambda: self._modbus_msg_queue.put(self.BG_CMD_SAVE_SQL)).start()
+                case self.BG_CMD_SAVE_SQL:
+                    if self._sql_engine:
+                        self._save_data_to_db()
+                        next_time = ((_base_time - time.time()) % _sql_save_interval_ms/1000.0) or _sql_save_interval_ms/1000.0
+                        threading.Timer(next_time, lambda: self._modbus_msg_queue.put(self.BG_CMD_SAVE_SQL)).start()
                 case self.BG_CMD_SAVE_STOP:
                     if self._sql_engine:
                         self._sql_engine.clear_compiled_cache()
@@ -543,10 +560,11 @@ class Application(tk.Frame):
                     self._sync_ao_all()
                 case self.BG_CMD_AI_RECEIVE:
                     self._sync_ai_all()
-                    self._save_data_to_db()
                     self._modbus_bg_calc_param()
-                    next_time = ((base_time - time.time()) % interval) or interval
+                    next_time = ((_base_time - time.time()) % _modbus_interval_ms/1000.0) or _modbus_interval_ms/1000.0
                     threading.Timer(next_time, lambda: self._modbus_msg_queue.put(self.BG_CMD_AI_RECEIVE)).start()
+                case self.BG_CMD_CHANGE_INTERVAL:
+                    _sql_save_interval_ms = self._sql_save_interval_ms
                 case _:
                     print('Background: Unknown message')
 
@@ -563,7 +581,7 @@ class Application(tk.Frame):
             self._aio.set_ai_raw_all(np.array(rr.registers, dtype=np.uint16).astype(np.int16))
 
     def _sync_ao_all(self):
-        data = self._aio.get_ao_data_all().tolist()
+        data = self._aio.get_ao_data_all()
         try:
             with self._modbus_client_lock:
                 if self._modbus_client:
@@ -617,9 +635,9 @@ class Application(tk.Frame):
             _phy = float(par[ch])
             self._label_param_phy_list[ch].config(text=self.FMT_STRING_FLOAT%_phy)
 
-        self.after(200, self._update_display)
+        self.after(self._display_update_interval_ms, self._update_display)
 
-    def _set_ao(self, ch, entry):
+    def _req_set_ao(self, ch, entry):
         try:
             _x = float(entry.get())
             _x = np.uint16(_x*1000)
@@ -629,6 +647,25 @@ class Application(tk.Frame):
             self._modbus_msg_queue.put(self.BG_CMD_AO_SEND)
         except ValueError as e:
             pass
+
+    def _req_change_interval(self, interval_ms):
+        try:
+            _ms = 100
+            if type(interval_ms) is str:
+                if 'ms' in interval_ms:
+                    _ms = int(interval_ms[:-2])
+                elif 's' in interval_ms:
+                    _ms = int(interval_ms[:-1])*1000
+                elif 'min' in interval_ms:
+                    _ms = int(interval_ms[:-3])*1000*60
+            else:
+                _ms = int(interval_ms)
+            _ms = 100 if _ms < 100 else _ms
+            print(_ms)
+            self._sql_save_interval_ms = _ms
+            self._modbus_msg_queue.put(self.BG_CMD_CHANGE_INTERVAL)
+        except ValueError as e:
+            print(e)
 
     def _create_widgets(self):
         FONT_NAME = 'Consolas'
@@ -897,11 +934,23 @@ class Application(tk.Frame):
             _entry = tk.Entry(_parent_frame, width=WIDTH_OF_DIGIT_LABEL, font=FONT_NORMAL, justify='right')
             _entry.grid(row=_row, column=1, padx=5)
             _entry.insert(0, '0')
-            _btn = tk.Button(_parent_frame, text='Set', font=FONT_SMALL, command=lambda: self._set_ao(_ao_cb.current(), _entry))
+            _btn = tk.Button(_parent_frame, text='Set', font=FONT_SMALL, command=lambda: self._req_set_ao(_ao_cb.current(), _entry))
             _btn.grid(row=_row, column=2, padx=5)
 
             _ao_cb.bind('<<ComboboxSelected>>', lambda e: _entry.delete(0, tk.END) or _entry.insert(0, self._convert_gp8403_raw2vlt(self._aio.get_ao_raw(_ao_cb.current()))))
         _parent_frame.pack(side=tk.LEFT, padx=5)
+
+        # # Set Interval Frame
+        # _parent_frame = tk.LabelFrame(self, text='Set Interval', font=FONT_LARGE_BOLD)
+        # if _parent_frame:
+        #     _row = 0
+        #     # interval is range(100, 100*1000, ) and use combobox
+        #     _interval_cb_values = ["100ms", "200ms", "500ms", "1s", "2s", "5s", "10s", "30s", "1min", "5min", "10min"]
+        #     _interval_cb = ttk.Combobox(_parent_frame, values=_interval_cb_values, state='readonly', font=FONT_NORMAL)
+        #     _interval_cb.grid(row=_row, column=0, columnspan=2, padx=5)
+        #     _btn = tk.Button(_parent_frame, text='Update', font=FONT_SMALL, command=lambda: self._req_change_interval(_interval_cb.get()))
+        #     _btn.grid(row=_row, column=2, padx=5)
+        # _parent_frame.pack(side=tk.LEFT, padx=5)
 
         # Information Frame
         _parent_frame = tk.LabelFrame(self, text='Information', font=FONT_LARGE_BOLD)
