@@ -117,29 +117,35 @@ class ThreadSafeAioData():
         self._ao_calib_c = np.array([0.0]*NUM_CH_AO, dtype=np.float32)
         self._param = np.array([0.0]*NUM_CH_PARAM, dtype=np.float32)
 
-    def set_param_value(self, value:float, ch:int):
-        if ch < 0 or ch >= NUM_CH_PARAM:
-            raise ValueError('Invalid channel')
-        with self._lock:
-            self._param[ch] = value
-    
-    def get_param_value(self, ch:int):
+    def get_param_phy(self, ch:int):
         if ch < 0 or ch >= NUM_CH_PARAM:
             raise ValueError('Invalid channel')
         with self._lock:
             return self._param[ch]
-    
-    def set_param_value_all(self, data:np.ndarray):
+
+    def set_param_phy(self, value:float, ch:int):
+        if ch < 0 or ch >= NUM_CH_PARAM:
+            raise ValueError('Invalid channel')
+        with self._lock:
+            self._param[ch] = value
+
+    def get_param_phy_all(self):
+        with self._lock:
+            return copy.deepcopy(self._param)
+
+    def set_param_phy_all(self, data:np.ndarray):
         if data.shape != (NUM_CH_PARAM,):
             raise ValueError('Invalid data shape')
         with self._lock:
             self._param = copy.deepcopy(data)
-    
-    def get_param_value_all(self):
-        with self._lock:
-            return copy.deepcopy(self._param)
 
-    def set_ai_calib_value(self, a:float, b:float, c:float, ch:int):
+    def get_ai_calib(self, ch:int):
+        if ch < 0 or ch >= NUM_CH_AI:
+            raise ValueError('Invalid channel')
+        with self._lock:
+            return (float(self._ai_calib_a[ch]), float(self._ai_calib_b[ch]), float(self._ai_calib_c[ch]))
+
+    def set_ai_calib(self, a:float, b:float, c:float, ch:int):
         if ch < 0 or ch >= NUM_CH_AI:
             raise ValueError('Invalid channel')
         with self._lock:
@@ -147,27 +153,21 @@ class ThreadSafeAioData():
             self._ai_calib_b[ch] = b
             self._ai_calib_c[ch] = c
 
-    def get_ai_calib_value(self, ch:int):
-        if ch < 0 or ch >= NUM_CH_AI:
+    def get_ao_calib(self, ch:int):
+        if ch < 0 or ch >= NUM_CH_AO:
             raise ValueError('Invalid channel')
         with self._lock:
-            return (float(self._ai_calib_a[ch]), float(self._ai_calib_b[ch]), float(self._ai_calib_c[ch]))
+            return (float(self._ao_calib_a[ch]), float(self._ao_calib_b[ch]), float(self._ao_calib_c[ch]))
 
-    def set_ao_calib_value(self, a:float, b:float, c:float, ch:int):
+    def set_ao_calib(self, a:float, b:float, c:float, ch:int):
         if ch < 0 or ch >= NUM_CH_AO:
             raise ValueError('Invalid channel')
         with self._lock:
             self._ao_calib_a[ch] = a
             self._ao_calib_b[ch] = b
             self._ao_calib_c[ch] = c
-    
-    def get_ao_calib_value(self, ch:int):
-        if ch < 0 or ch >= NUM_CH_AO:
-            raise ValueError('Invalid channel')
-        with self._lock:
-            return (float(self._ao_calib_a[ch]), float(self._ao_calib_b[ch]), float(self._ao_calib_c[ch]))
 
-    def get_ai_data_calibed(self, ch:int):
+    def get_ai_phy(self, ch:int):
         if ch < 0 or ch >= NUM_CH_AI:
             raise ValueError('Invalid channel')
         with self._lock:
@@ -177,7 +177,7 @@ class ThreadSafeAioData():
             _c = self._ai_calib_c[ch]
             return (_x * _a**2 + _x * _b + _c)
 
-    def get_ai_data_calibed_all(self):
+    def get_ai_phy_all(self):
         with self._lock:
             _x = self._ai
             _a = self._ai_calib_a
@@ -185,7 +185,7 @@ class ThreadSafeAioData():
             _c = self._ai_calib_c
             return (_x * _a**2 + _x * _b + _c)
 
-    def get_ao_data_calibed(self, ch:int):
+    def get_ao_phy(self, ch:int):
         if ch < 0 or ch >= NUM_CH_AO:
             raise ValueError('Invalid channel')
         with self._lock:
@@ -195,7 +195,7 @@ class ThreadSafeAioData():
             _c = self._ao_calib_c[ch]
             return (_x * _a**2 + _x * _b + _c)
     
-    def get_ao_data_calibed_all(self):
+    def get_ao_phy_all(self):
         with self._lock:
             _x = self._ao
             _a = self._ao_calib_a
@@ -203,25 +203,29 @@ class ThreadSafeAioData():
             _c = self._ao_calib_c
             return (_x * _a**2 + _x * _b + _c)
 
-    def set_ao_data(self, data:np.uint16, ch:int):
-        if ch < 0 or ch >= NUM_CH_AO:
+    def get_ai_raw(self, ch:int) -> np.int16:
+        if ch < 0 or ch >= NUM_CH_AI:
             raise ValueError('Invalid channel')
         with self._lock:
-            self._ao[ch] = copy.deepcopy(np.uint16(data))
+            return copy.deepcopy(self._ai[ch])
 
-    def set_ai_data(self, data:np.int16, ch:int):
+    def get_ai_raw_all(self):
+        with self._lock:
+            return copy.deepcopy(self._ai)
+
+    def set_ai_raw(self, data:np.int16, ch:int):
         if ch < 0 or ch >= NUM_CH_AI:
             raise ValueError('Invalid channel')
         with self._lock:
             self._ai[ch] = copy.deepcopy(np.int16(data))
 
-    def set_ai_data_all(self, data:np.ndarray):
+    def set_ai_raw_all(self, data:np.ndarray):
         if data.shape != (NUM_CH_AI,):
             raise ValueError('Invalid data shape')
         with self._lock:
             self._ai = copy.deepcopy(data)
 
-    def get_ao_data(self, ch:int):
+    def get_ao_raw(self, ch:int):
         if ch < 0 or ch >= NUM_CH_AO:
             raise ValueError('Invalid channel')
         with self._lock:
@@ -230,16 +234,18 @@ class ThreadSafeAioData():
     def get_ao_data_all(self) -> np.uint16:
         with self._lock:
             return copy.deepcopy(self._ao)
-    
-    def get_ai_data_all(self):
-        with self._lock:
-            return copy.deepcopy(self._ai)
-    
-    def get_ai_data(self, ch:int) -> np.int16:
-        if ch < 0 or ch >= NUM_CH_AI:
+
+    def set_ao_raw(self, data:np.uint16, ch:int):
+        if ch < 0 or ch >= NUM_CH_AO:
             raise ValueError('Invalid channel')
         with self._lock:
-            return copy.deepcopy(self._ai[ch])
+            self._ao[ch] = copy.deepcopy(np.uint16(data))
+        
+    def set_ao_raw_all(self, data:np.ndarray):
+        if data.shape != (NUM_CH_AO,):
+            raise ValueError('Invalid data shape')
+        with self._lock:
+            self._ao = copy.deepcopy(data)
 
 # Create a new thread for ModbusRTU
 class Application(tk.Frame):
@@ -309,10 +315,10 @@ class Application(tk.Frame):
         # restore calib values to AIO
         for ch in range(NUM_CH_AI):
             _a, _b, _c = self._config_json['ai'][ch]['calib']
-            self._aio.set_ai_calib_value(_a, _b, _c, ch)
+            self._aio.set_ai_calib(_a, _b, _c, ch)
         for ch in range(NUM_CH_AO):
             _a, _b, _c = self._config_json['ao'][ch]['calib']
-            self._aio.set_ao_calib_value(_a, _b, _c, ch)
+            self._aio.set_ao_calib(_a, _b, _c, ch)
 
         self._create_widgets()
         self._start_background_job()
@@ -325,7 +331,7 @@ class Application(tk.Frame):
             _ch_data = {}
             _ch_data['label'] = "AI CH %d LABEL"%ch if len(self._entry_ai_label_list)<=ch else self._entry_ai_label_list[ch].get()
             _ch_data['unit'] = "nan" if len(self._entry_ai_unit_list)<=ch else self._entry_ai_unit_list[ch].get()
-            _ch_data['calib'] = self._aio.get_ai_calib_value(ch)
+            _ch_data['calib'] = self._aio.get_ai_calib(ch)
             _ai.append(_ch_data)
         ret['ai'] = _ai
 
@@ -334,7 +340,7 @@ class Application(tk.Frame):
             _ch_data = {}
             _ch_data['label'] = "AO CH %d LABEL"%ch if len(self._entry_ao_label_list)<=ch else self._entry_ao_label_list[ch].get()
             _ch_data['unit'] = "nan" if len(self._entry_ao_unit_list)<=ch else self._entry_ao_unit_list[ch].get()
-            _ch_data['calib'] =  self._aio.get_ao_calib_value(ch)
+            _ch_data['calib'] =  self._aio.get_ao_calib(ch)
             _ao.append(_ch_data)
         ret['ao'] = _ao
 
@@ -392,11 +398,11 @@ class Application(tk.Frame):
                     aio = TableAio()
                     aio.time = datetime.datetime.now()
                     for ch in range(NUM_CH_AI):
-                        setattr(aio, 'ai_raw_%d'%ch, int(self._aio.get_ai_data(ch)))
-                        setattr(aio, 'ai_phy_%d'%ch, float(self._aio.get_ai_data_calibed(ch)))
+                        setattr(aio, 'ai_raw_%d'%ch, int(self._aio.get_ai_raw(ch)))
+                        setattr(aio, 'ai_phy_%d'%ch, float(self._aio.get_ai_phy(ch)))
                     for ch in range(NUM_CH_AO):
-                        setattr(aio, 'ao_raw_%d'%ch, int(self._aio.get_ao_data(ch)))
-                        setattr(aio, 'ao_phy_%d'%ch, float(self._aio.get_ao_data_calibed(ch)))
+                        setattr(aio, 'ao_raw_%d'%ch, int(self._aio.get_ao_raw(ch)))
+                        setattr(aio, 'ao_phy_%d'%ch, float(self._aio.get_ao_phy(ch)))
                     session.add(aio)
                     session.commit()
             except Exception as e:
@@ -405,7 +411,7 @@ class Application(tk.Frame):
 
     def _modbus_bg_calc_param(self):
         try:
-            _previous = self._aio.get_param_value_all()
+            _previous = self._aio.get_param_phy_all()
 
             ## @todo implement your own calculation
             for ch in range(NUM_CH_PARAM):
@@ -418,7 +424,7 @@ class Application(tk.Frame):
                 else:
                     _previous[ch] = _previous[ch] + 0.01 if _previous[ch]+0.01 < 1 else -1
             
-            self._aio.set_param_value_all(_previous)
+            self._aio.set_param_phy_all(_previous)
         except Exception as e:
             print('Background: Failed to calc param')
             print(e)
@@ -451,38 +457,38 @@ class Application(tk.Frame):
             for ch in range(NUM_CH_AI):
                 _label = self._entry_ai_label_list[ch].get()
                 json_label['ai_raw_%d'%ch] = _label
-                json_data['ai_raw_%d'%ch] = int(self._aio.get_ai_data(ch))
+                json_data['ai_raw_%d'%ch] = int(self._aio.get_ai_raw(ch))
                 json_unit['ai_raw_%d'%ch] = 'i16'
 
                 json_label['ai_phy_%d'%ch] = _label
                 json_unit['ai_phy_%d'%ch] = self._entry_ai_unit_list[ch].get()
-                json_data['ai_phy_%d'%ch] = float(self._aio.get_ai_data_calibed(ch))
+                json_data['ai_phy_%d'%ch] = float(self._aio.get_ai_phy(ch))
 
                 json_label['ai_vlt_%d'%ch] = _label
                 if ch < int(NUM_CH_AI/2):
                     json_unit['ai_vlt_%d'%ch] = 'mV'
-                    json_data['ai_vlt_%d'%ch] = self._convert_hx711_raw2vlt(int(self._aio.get_ai_data(ch)))
+                    json_data['ai_vlt_%d'%ch] = self._convert_hx711_raw2vlt(int(self._aio.get_ai_raw(ch)))
                 else:
                     json_unit['ai_vlt_%d'%ch] = 'V'
-                    json_data['ai_vlt_%d'%ch] = self._convert_ads1115_raw2vlt(int(self._aio.get_ai_data(ch)))
+                    json_data['ai_vlt_%d'%ch] = self._convert_ads1115_raw2vlt(int(self._aio.get_ai_raw(ch)))
 
             for ch in range(NUM_CH_AO):
                 _label = self._entry_ao_label_list[ch].get()
                 json_label['ao_raw_%d'%ch] = _label
                 json_unit['ao_raw_%d'%ch] = 'i16'
-                json_data['ao_raw_%d'%ch] = int(self._aio.get_ao_data(ch))
+                json_data['ao_raw_%d'%ch] = int(self._aio.get_ao_raw(ch))
 
                 json_label['ao_phy_%d'%ch] = _label
                 json_unit['ao_phy_%d'%ch] = self._entry_ao_unit_list[ch].get()
-                json_data['ao_phy_%d'%ch] = float(self._aio.get_ao_data_calibed(ch))
+                json_data['ao_phy_%d'%ch] = float(self._aio.get_ao_phy(ch))
 
                 json_label['ao_vlt_%d'%ch] = _label
                 json_unit['ao_vlt_%d'%ch] = 'V'
-                json_data['ao_vlt_%d'%ch] = self._convert_gp8403_raw2vlt(self._aio.get_ao_data(ch))
+                json_data['ao_vlt_%d'%ch] = self._convert_gp8403_raw2vlt(self._aio.get_ao_raw(ch))
             for ch in range(NUM_CH_PARAM):
                 json_label['param_phy_%d'%ch] = self._entry_param_label_list[ch].get()
                 json_unit['param_phy_%d'%ch] = self._entry_param_unit_list[ch].get()
-                json_data['param_phy_%d'%ch] = float(self._aio.get_param_value(ch))
+                json_data['param_phy_%d'%ch] = float(self._aio.get_param_phy(ch))
             
             ret = {
                 'env': json_env,
@@ -554,7 +560,7 @@ class Application(tk.Frame):
             print('sync_ai_all, Failed to write')
             print(e)
         if rr is not None and not rr.isError():
-            self._aio.set_ai_data_all(np.array(rr.registers, dtype=np.uint16).astype(np.int16))
+            self._aio.set_ai_raw_all(np.array(rr.registers, dtype=np.uint16).astype(np.int16))
 
     def _sync_ao_all(self):
         data = self._aio.get_ao_data_all().tolist()
@@ -580,10 +586,10 @@ class Application(tk.Frame):
 
     def _update_display(self):
         ao = self._aio.get_ao_data_all()
-        ai = self._aio.get_ai_data_all()
-        aic = self._aio.get_ai_data_calibed_all()
-        aoc = self._aio.get_ao_data_calibed_all()
-        par = self._aio.get_param_value_all()
+        ai = self._aio.get_ai_raw_all()
+        aic = self._aio.get_ai_phy_all()
+        aoc = self._aio.get_ao_phy_all()
+        par = self._aio.get_param_phy_all()
 
         for ch in range(NUM_CH_AI):
             self._label_ai_raw_list[ch].config(text="%d"% ai[ch])
@@ -613,16 +619,16 @@ class Application(tk.Frame):
 
         self.after(200, self._update_display)
 
-    # def _set_ao(self, ch, entry):
-    #     try:
-    #         _x = float(entry.get())
-    #         _x = np.uint16(_x*1000)
-    #         if _x < 0 or _x > 10000:
-    #             raise ValueError('Invalid value')
-    #         self._aio.set_ao_data(_x, ch)
-    #         self._modbus_msg_queue.put(self.BG_CMD_AO_SEND)
-    #     except ValueError as e:
-    #         pass
+    def _set_ao(self, ch, entry):
+        try:
+            _x = float(entry.get())
+            _x = np.uint16(_x*1000)
+            _x = 0 if _x < 0 else _x
+            _x = 10000 if _x > 10000 else _x
+            self._aio.set_ao_raw(_x, ch)
+            self._modbus_msg_queue.put(self.BG_CMD_AO_SEND)
+        except ValueError as e:
+            pass
 
     def _create_widgets(self):
         FONT_NAME = 'Consolas'
@@ -774,19 +780,19 @@ class Application(tk.Frame):
         if _parent_frame:
             _row = 0
             _make_label_label(_parent_frame, 'Phy=A*Raw^2+B*Raw+C', _row, 0)
-            _cb_values = ["AI CH %d"%ch for ch in range(NUM_CH_AI)] + ["AO CH %d"%ch for ch in range(NUM_CH_AO)]
+            _calib_cb_values = ["AI CH %d"%ch for ch in range(NUM_CH_AI)] + ["AO CH %d"%ch for ch in range(NUM_CH_AO)]
             # ComboBox
             _row += 1
-            _cb = ttk.Combobox(_parent_frame, values=_cb_values, state='readonly', font=FONT_NORMAL)
+            _calib_cb = ttk.Combobox(_parent_frame, values=_calib_cb_values, state='readonly', font=FONT_NORMAL)
             # if combobox is selected, update the entry
             def _update_entry(digit_label:tk.Label, cb:ttk.Combobox, entry_a:tk.Entry, entry_b:tk.Entry, entry_c:tk.Entry):
                 _ch = cb.current()
                 if _ch < NUM_CH_AI:
-                    _a, _b, _c = self._aio.get_ai_calib_value(_ch)
-                    _phy = self._aio.get_ai_data_calibed(_ch)
+                    _a, _b, _c = self._aio.get_ai_calib(_ch)
+                    _phy = self._aio.get_ai_phy(_ch)
                 else:
-                    _a, _b, _c = self._aio.get_ao_calib_value(_ch-NUM_CH_AI)
-                    _phy = self._aio.get_ao_data_calibed(_ch-NUM_CH_AI)
+                    _a, _b, _c = self._aio.get_ao_phy(_ch-NUM_CH_AI)
+                    _phy = self._aio.get_ao_phy(_ch-NUM_CH_AI)
                 entry_a.delete(0, tk.END)
                 entry_a.insert(0, self.FMT_STRING_CALIB_FLOAT%_a)
                 entry_b.delete(0, tk.END)
@@ -794,8 +800,8 @@ class Application(tk.Frame):
                 entry_c.delete(0, tk.END)
                 entry_c.insert(0, self.FMT_STRING_CALIB_FLOAT%_c)
                 digit_label.config(text=self.FMT_STRING_FLOAT%_phy)
-            # _cb.bind('<<ComboboxSelected>>', lambda e: _update_entry(_digit, _cb, _entry_a, _entry_b, _entry_c))
-            _cb.grid(row=_row, column=0, columnspan=3, padx=5)
+            #_calib_cb.bind('<<ComboboxSelected>>', lambda e: _update_entry(_digit, _calib_cb, _entry_a, _entry_b, _entry_c))
+            _calib_cb.grid(row=_row, column=0, columnspan=3, padx=5)
             # A value
             _row += 1
             _make_type_label(_parent_frame, 'A', _row, 0)
@@ -821,7 +827,7 @@ class Application(tk.Frame):
             _digit.grid(row=_row, column=1)
             _make_unit_label(_parent_frame, 'nan', _row, 2)
 
-            _cb.bind('<<ComboboxSelected>>', lambda e: _update_entry(_digit, _cb, _entry_a, _entry_b, _entry_c))
+            _calib_cb.bind('<<ComboboxSelected>>', lambda e: _update_entry(_digit, _calib_cb, _entry_a, _entry_b, _entry_c))
 
             # Preview Button
             _row += 1
@@ -833,13 +839,13 @@ class Application(tk.Frame):
                 _b = float(entry_b.get())
                 _c = float(entry_c.get())
                 if _ch < NUM_CH_AI:
-                    _x = self._aio.get_ai_data(_ch)
+                    _x = self._aio.get_ai_raw(_ch)
                     _phy = _x * _a**2 + _x * _b + _c
                 else:
-                    _x = self._aio.get_ao_data(_ch-NUM_CH_AI)
+                    _x = self._aio.get_ao_raw(_ch-NUM_CH_AI)
                     _phy = _x * _a**2 + _x * _b + _c
                 digit_label.config(text=self.FMT_STRING_FLOAT%_phy)
-            _btn = tk.Button(_parent_frame, text='Update', font=FONT_TINY, command=lambda: _update_phy(_digit, _cb, _entry_a, _entry_b, _entry_c))
+            _btn = tk.Button(_parent_frame, text='Update', font=FONT_TINY, command=lambda: _update_phy(_digit, _calib_cb, _entry_a, _entry_b, _entry_c))
             _btn.grid(row=_row, column=0)
             # Offset Zero Button
             def _offset_zero_calib(digit_label:tk.Label, cb:ttk.Combobox, entry_a:tk.Entry, entry_b:tk.Entry, entry_c:tk.Entry):
@@ -849,17 +855,17 @@ class Application(tk.Frame):
                 _a = float(entry_a.get())
                 _b = float(entry_b.get())
                 if _ch < NUM_CH_AI:
-                    _x = self._aio.get_ai_data(_ch)
+                    _x = self._aio.get_ai_raw(_ch)
                     _phy = _x * _a**2 + _x * _b
                 else:
-                    _x = self._aio.get_ao_data(_ch-NUM_CH_AI)
+                    _x = self._aio.get_ao_raw(_ch-NUM_CH_AI)
                     _phy = _x * _a**2 + _x * _b
                 _c = -_phy
                 _phy = _x * _a**2 + _x * _b + _c
                 entry_c.delete(0, tk.END)
                 entry_c.insert(0, self.FMT_STRING_CALIB_FLOAT%_c)
                 digit_label.config(text=_phy)
-            _btn = tk.Button(_parent_frame, text='Offset Zero', font=FONT_TINY, command=lambda: _offset_zero_calib(_label, _cb, _entry_a, _entry_b, _entry_c))
+            _btn = tk.Button(_parent_frame, text='Offset Zero', font=FONT_TINY, command=lambda: _offset_zero_calib(_label, _calib_cb, _entry_a, _entry_b, _entry_c))
             _btn.grid(row=_row, column=1)
             # Set Button
             def _set_calib(cb:ttk.Combobox, entry_a:tk.Entry, entry_b:tk.Entry, entry_c:tk.Entry):
@@ -870,11 +876,31 @@ class Application(tk.Frame):
                 _b = float(entry_b.get())
                 _c = float(entry_c.get())
                 if _ch < NUM_CH_AI:
-                    self._aio.set_ai_calib_value(_a, _b, _c, _ch)
+                    self._aio.set_ai_calib(_a, _b, _c, _ch)
                 else:
-                    self._aio.set_ao_calib_value(_a, _b, _c, _ch-NUM_CH_AI)
-            _btn = tk.Button(_parent_frame, text='Apply', font=FONT_TINY, command=lambda: _set_calib(_cb, _entry_a, _entry_b, _entry_c))
+                    self._aio.set_ao_calib(_a, _b, _c, _ch-NUM_CH_AI)
+            _btn = tk.Button(_parent_frame, text='Apply', font=FONT_TINY, command=lambda: _set_calib(_calib_cb, _entry_a, _entry_b, _entry_c))
             _btn.grid(row=_row, column=2)
+        _parent_frame.pack(side=tk.LEFT, padx=5)
+
+        # Analog output Frame
+        _parent_frame = tk.LabelFrame(self, text='Set Analog Out', font=FONT_LARGE_BOLD)
+        if _parent_frame:
+            # select channnel combobox
+            _row = 0
+            _ao_cb_values = ["AO CH %d"%ch for ch in range(NUM_CH_AO)]
+            _ao_cb = ttk.Combobox(_parent_frame, values=_ao_cb_values, state='readonly', font=FONT_NORMAL)
+            _ao_cb.grid(row=_row, column=0, columnspan=3, padx=5)
+            # Set Value Entry and Button
+            _row += 1
+            _make_type_label(_parent_frame, 'Vlt', _row, 0)
+            _entry = tk.Entry(_parent_frame, width=WIDTH_OF_DIGIT_LABEL, font=FONT_NORMAL, justify='right')
+            _entry.grid(row=_row, column=1, padx=5)
+            _entry.insert(0, '0')
+            _btn = tk.Button(_parent_frame, text='Set', font=FONT_SMALL, command=lambda: self._set_ao(_ao_cb.current(), _entry))
+            _btn.grid(row=_row, column=2, padx=5)
+
+            _ao_cb.bind('<<ComboboxSelected>>', lambda e: _entry.delete(0, tk.END) or _entry.insert(0, self._convert_gp8403_raw2vlt(self._aio.get_ao_raw(_ao_cb.current()))))
         _parent_frame.pack(side=tk.LEFT, padx=5)
 
         # Information Frame
