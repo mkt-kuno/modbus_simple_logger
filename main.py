@@ -6,7 +6,8 @@ import threading, queue
 
 import numpy as np
 
-from websockets.sync import server as WSServe
+from microdot import Microdot
+import microdot.websocket
 
 from pymodbus import FramerType
 import pymodbus.client as ModbusClient
@@ -149,9 +150,9 @@ class ThreadSafeAioData():
         if ch < 0 or ch >= NUM_CH_AI:
             raise ValueError('Invalid channel')
         with self._lock:
-            self._ai_calib_a[ch] = a
-            self._ai_calib_b[ch] = b
-            self._ai_calib_c[ch] = c
+            self._ai_calib_a[ch] = np.float32(a)
+            self._ai_calib_b[ch] = np.float32(b)
+            self._ai_calib_c[ch] = np.float32(c)
 
     def get_ao_calib(self, ch:int) -> tuple:
         if ch < 0 or ch >= NUM_CH_AO:
@@ -163,9 +164,9 @@ class ThreadSafeAioData():
         if ch < 0 or ch >= NUM_CH_AO:
             raise ValueError('Invalid channel')
         with self._lock:
-            self._ao_calib_a[ch] = a
-            self._ao_calib_b[ch] = b
-            self._ao_calib_c[ch] = c
+            self._ao_calib_a[ch] = np.float32(a)
+            self._ao_calib_b[ch] = np.float32(b)
+            self._ao_calib_c[ch] = np.float32(c)
 
     def get_ai_phy(self, ch:int) -> float:
         if ch < 0 or ch >= NUM_CH_AI:
@@ -274,6 +275,7 @@ class Application(tk.Frame):
     _sql_save_interval_ms = 100
 
     _webserver_url = "ws://%s:%d"%(WEBSOCKET_HOST, WEBSOCKET_PORT)
+    _microdot = Microdot()
 
     _modbus_thread = None
     _modbus_msg_queue = queue.Queue()
@@ -387,7 +389,8 @@ class Application(tk.Frame):
         self._modbus_msg_queue.put(self.BG_CMD_AO_SEND)
         self._modbus_msg_queue.put(self.BG_CMD_AI_RECEIVE)
 
-        threading.Thread(target=self._webserver_bg_thread, daemon=True).start()
+        #threading.Thread(target=self._webserver_bg_thread, daemon=True).start()
+        threading.Thread(target=asyncio.run, args=(self._bg_asyncio_main(),), daemon=True).start()
 
     def _stop_background_job(self):
         if not self._modbus_thread:
@@ -440,80 +443,89 @@ class Application(tk.Frame):
             print('Background: Failed to calc param')
             print(e)
 
-    def _webserver_handler(self, websocket):
+    def _create_json_response(self):
+        json_env = {
+            "version": "1.0",
+            'num_ch_ai': NUM_CH_AI,
+            'num_ch_ao': NUM_CH_AO,
+            'num_ch_param': NUM_CH_PARAM,
+            'modbus_com_port': MODBUS_COM_PORT,
+            'modbus_mode': MODBUS_MODE,
+            'modbus_baudrate': MODBUS_BAUDRATE,
+            'modbus_slave_address': MODBUS_SLAVE_ADDRESS,
+        }
+        json_key =  ["index", "time"] + \
+                    ["ai_raw_%d"%i for i in range(NUM_CH_AI)] + \
+                    ["ai_phy_%d"%i for i in range(NUM_CH_AI)] + \
+                    ["ao_raw_%d"%i for i in range(NUM_CH_AO)] + \
+                    ["ao_phy_%d"%i for i in range(NUM_CH_AO)] + \
+                    ["ao_vlt_%d"%i for i in range(NUM_CH_AO)] + \
+                    ["param_phy_%d"%i for i in range(NUM_CH_PARAM)]
+        json_label = {"time": "Time"}
+        json_unit = {"time": None }
+        json_data = {
+            'index': -1, 
+            'time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'),
+        }
+        for ch in range(NUM_CH_AI):
+            _label = self._entry_ai_label_list[ch].get()
+            json_label['ai_raw_%d'%ch] = _label
+            json_data['ai_raw_%d'%ch] = int(self._aio.get_ai_raw(ch))
+            json_unit['ai_raw_%d'%ch] = 'i16'
+
+            json_label['ai_phy_%d'%ch] = _label
+            json_unit['ai_phy_%d'%ch] = self._entry_ai_unit_list[ch].get()
+            json_data['ai_phy_%d'%ch] = float(self._aio.get_ai_phy(ch))
+
+            json_label['ai_vlt_%d'%ch] = _label
+            if ch < int(NUM_CH_AI/2):
+                json_unit['ai_vlt_%d'%ch] = 'mV'
+                json_data['ai_vlt_%d'%ch] = self._convert_hx711_raw2vlt(int(self._aio.get_ai_raw(ch)))
+            else:
+                json_unit['ai_vlt_%d'%ch] = 'V'
+                json_data['ai_vlt_%d'%ch] = self._convert_ads1115_raw2vlt(int(self._aio.get_ai_raw(ch)))
+
+        for ch in range(NUM_CH_AO):
+            _label = self._entry_ao_label_list[ch].get()
+            json_label['ao_raw_%d'%ch] = _label
+            json_unit['ao_raw_%d'%ch] = 'i16'
+            json_data['ao_raw_%d'%ch] = int(self._aio.get_ao_raw(ch))
+
+            json_label['ao_phy_%d'%ch] = _label
+            json_unit['ao_phy_%d'%ch] = self._entry_ao_unit_list[ch].get()
+            json_data['ao_phy_%d'%ch] = float(self._aio.get_ao_phy(ch))
+
+            json_label['ao_vlt_%d'%ch] = _label
+            json_unit['ao_vlt_%d'%ch] = 'V'
+            json_data['ao_vlt_%d'%ch] = self._convert_gp8403_raw2vlt(self._aio.get_ao_raw(ch))
+        for ch in range(NUM_CH_PARAM):
+            json_label['param_phy_%d'%ch] = self._entry_param_label_list[ch].get()
+            json_unit['param_phy_%d'%ch] = self._entry_param_unit_list[ch].get()
+            json_data['param_phy_%d'%ch] = float(self._aio.get_param_phy(ch))
+        
+        ret = {
+            'env': json_env,
+            'key': json_key,
+            'label': json_label,
+            'unit': json_unit,
+            'data': [json_data],
+        }
+        return json.dumps(ret)
+
+    async def _microdot_websocket_handler(self, request):
+        ws = await microdot.websocket.websocket_upgrade(request)
         while True:
-            json_env = {
-                "version": "1.0",
-                'num_ch_ai': NUM_CH_AI,
-                'num_ch_ao': NUM_CH_AO,
-                'num_ch_param': NUM_CH_PARAM,
-                'modbus_com_port': MODBUS_COM_PORT,
-                'modbus_mode': MODBUS_MODE,
-                'modbus_baudrate': MODBUS_BAUDRATE,
-                'modbus_slave_address': MODBUS_SLAVE_ADDRESS,
-            }
-            json_key =  ["index", "time"] + \
-                        ["ai_raw_%d"%i for i in range(NUM_CH_AI)] + \
-                        ["ai_phy_%d"%i for i in range(NUM_CH_AI)] + \
-                        ["ao_raw_%d"%i for i in range(NUM_CH_AO)] + \
-                        ["ao_phy_%d"%i for i in range(NUM_CH_AO)] + \
-                        ["ao_vlt_%d"%i for i in range(NUM_CH_AO)] + \
-                        ["param_phy_%d"%i for i in range(NUM_CH_PARAM)]
-            json_label = {"time": "Time"}
-            json_unit = {"time": None }
-            json_data = {
-                'index': -1, 
-                'time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'),
-            }
-            for ch in range(NUM_CH_AI):
-                _label = self._entry_ai_label_list[ch].get()
-                json_label['ai_raw_%d'%ch] = _label
-                json_data['ai_raw_%d'%ch] = int(self._aio.get_ai_raw(ch))
-                json_unit['ai_raw_%d'%ch] = 'i16'
-
-                json_label['ai_phy_%d'%ch] = _label
-                json_unit['ai_phy_%d'%ch] = self._entry_ai_unit_list[ch].get()
-                json_data['ai_phy_%d'%ch] = float(self._aio.get_ai_phy(ch))
-
-                json_label['ai_vlt_%d'%ch] = _label
-                if ch < int(NUM_CH_AI/2):
-                    json_unit['ai_vlt_%d'%ch] = 'mV'
-                    json_data['ai_vlt_%d'%ch] = self._convert_hx711_raw2vlt(int(self._aio.get_ai_raw(ch)))
-                else:
-                    json_unit['ai_vlt_%d'%ch] = 'V'
-                    json_data['ai_vlt_%d'%ch] = self._convert_ads1115_raw2vlt(int(self._aio.get_ai_raw(ch)))
-
-            for ch in range(NUM_CH_AO):
-                _label = self._entry_ao_label_list[ch].get()
-                json_label['ao_raw_%d'%ch] = _label
-                json_unit['ao_raw_%d'%ch] = 'i16'
-                json_data['ao_raw_%d'%ch] = int(self._aio.get_ao_raw(ch))
-
-                json_label['ao_phy_%d'%ch] = _label
-                json_unit['ao_phy_%d'%ch] = self._entry_ao_unit_list[ch].get()
-                json_data['ao_phy_%d'%ch] = float(self._aio.get_ao_phy(ch))
-
-                json_label['ao_vlt_%d'%ch] = _label
-                json_unit['ao_vlt_%d'%ch] = 'V'
-                json_data['ao_vlt_%d'%ch] = self._convert_gp8403_raw2vlt(self._aio.get_ao_raw(ch))
-            for ch in range(NUM_CH_PARAM):
-                json_label['param_phy_%d'%ch] = self._entry_param_label_list[ch].get()
-                json_unit['param_phy_%d'%ch] = self._entry_param_unit_list[ch].get()
-                json_data['param_phy_%d'%ch] = float(self._aio.get_param_phy(ch))
-            
-            ret = {
-                'env': json_env,
-                'key': json_key,
-                'label': json_label,
-                'unit': json_unit,
-                'data': [json_data],
-            }
-            websocket.send(json.dumps(ret))
-            time.sleep(1)
-
-    def _webserver_bg_thread(self):
-        with WSServe.serve(self._webserver_handler, WEBSOCKET_HOST, WEBSOCKET_PORT) as server:
-            server.serve_forever()
+            ret = self._create_json_response()
+            try:
+                await ws.send(ret)
+                await asyncio.sleep(1)
+            except Exception as e:
+                break
+    
+    async def _bg_asyncio_main(self):
+        self._microdot.route('/ws')(self._microdot_websocket_handler)
+        await self._microdot.start_server(debug=False, host=WEBSOCKET_HOST, port=WEBSOCKET_PORT)
+        await asyncio.get_running_loop().create_future()
 
     def _modbus_bg_thread(self):
         _base_time = time.time()
