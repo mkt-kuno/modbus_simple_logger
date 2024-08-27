@@ -6,7 +6,7 @@ import tkinter.ttk as ttk
 import numpy as np
 
 import uvicorn
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from pymodbus import FramerType
 import pymodbus.client as ModbusClient
@@ -132,13 +132,13 @@ class ThreadSafeAioData():
         with self._lock:
             return self._param.tolist()
 
-    def set_param_phy_all(self, data:list):
+    def set_param_phy_all(self, data:list[float]):
         if len(data) != NUM_CH_PARAM:
             raise ValueError('Invalid data shape')
         with self._lock:
             self._param = np.array(data)
 
-    def get_ai_calib(self, ch:int) -> tuple:
+    def get_ai_calib(self, ch:int) -> tuple[float, float, float]:
         if ch < 0 or ch >= NUM_CH_AI:
             raise ValueError('Invalid channel')
         with self._lock:
@@ -152,7 +152,7 @@ class ThreadSafeAioData():
             self._ai_calib_b[ch] = np.float32(b)
             self._ai_calib_c[ch] = np.float32(c)
 
-    def get_ao_calib(self, ch:int) -> tuple:
+    def get_ao_calib(self, ch:int) -> tuple[float, float, float]:
         if ch < 0 or ch >= NUM_CH_AO:
             raise ValueError('Invalid channel')
         with self._lock:
@@ -176,7 +176,7 @@ class ThreadSafeAioData():
             _c = self._ai_calib_c[ch]
             return float(_x * _a**2 + _x * _b + _c)
 
-    def get_ai_phy_all(self) -> list:
+    def get_ai_phy_all(self) -> list[float]:
         with self._lock:
             _x = self._ai
             _a = self._ai_calib_a
@@ -194,7 +194,7 @@ class ThreadSafeAioData():
             _c = self._ao_calib_c[ch]
             return float(_x * _a**2 + _x * _b + _c)
     
-    def get_ao_phy_all(self) -> list:
+    def get_ao_phy_all(self) -> list[float]:
         with self._lock:
             _x = self._ao
             _a = self._ao_calib_a
@@ -208,7 +208,7 @@ class ThreadSafeAioData():
         with self._lock:
             return int(self._ai[ch])
 
-    def get_ai_raw_all(self) -> list:
+    def get_ai_raw_all(self) -> list[int]:
         with self._lock:
             return self._ai.tolist()
 
@@ -218,7 +218,7 @@ class ThreadSafeAioData():
         with self._lock:
             self._ai[ch] = np.int16(data)
 
-    def set_ai_raw_all(self, data:list):
+    def set_ai_raw_all(self, data:list[int]):
         if len(data) != NUM_CH_AI:
             raise ValueError('Invalid data shape')
         with self._lock:
@@ -230,7 +230,7 @@ class ThreadSafeAioData():
         with self._lock:
             return int(self._ao[ch])
 
-    def get_ao_data_all(self) -> list:
+    def get_ao_raw_all(self) -> list[int]:
         with self._lock:
             return copy.deepcopy(self._ao).tolist()
 
@@ -240,13 +240,12 @@ class ThreadSafeAioData():
         with self._lock:
             self._ao[ch] = np.uint16(data)
         
-    def set_ao_raw_all(self, data:list):
+    def set_ao_raw_all(self, data:list[int]):
         if len(data) != NUM_CH_AO:
             raise ValueError('Invalid data shape')
         with self._lock:
             self._ao = np.array(np.data)
 
-# Create a new thread for ModbusRTU
 class Application(tk.Frame):
     BG_CMD_MODBUS_START = 'modbus_start'
     BG_CMD_MODBUS_STOP = 'modbus_stop'
@@ -353,7 +352,7 @@ class Application(tk.Frame):
             self._modbus_thread = None
 
     def _ui_update_display(self):
-        _ao = self._aio.get_ao_data_all()
+        _ao = self._aio.get_ao_raw_all()
         _ai = self._aio.get_ai_raw_all()
         _aic = self._aio.get_ai_phy_all()
         _aoc = self._aio.get_ao_phy_all()
@@ -873,7 +872,7 @@ class Application(tk.Frame):
             self._aio.set_ai_raw_all(np.array(rr.registers, dtype=np.uint16).astype(np.int16))
 
     def _bg_modbus_sync_ao_all(self):
-        data = self._aio.get_ao_data_all()
+        data = self._aio.get_ao_raw_all()
         try:
             with self._modbus_client_lock:
                 if self._modbus_client:
@@ -954,11 +953,14 @@ class Application(tk.Frame):
     async def _bg_webserver_websocket_handler(self, websocket: WebSocket):
         await websocket.accept()
         while True:
-            ret = self._bg_webserver_create_json_response()
             try:
-                await websocket.send_text(ret)
+                msg = self._bg_webserver_create_json_response()
+                await websocket.send_text(msg)
                 await asyncio.sleep(1)
+            except WebSocketDisconnect:
+                break
             except Exception as e:
+                print(e)
                 break
 
     def _bg_webserver_hello_world(self):

@@ -1,4 +1,7 @@
-python == 3.12.2
+# python == 3.12.2
+fastapi == 0.112.1
 pymodbus == 3.7.0
-numpy == 1.26.4
-SQLAlchemy == 2.0.29
+numpy == 2.1.0
+uvicorn == 0.30.6
+SQLAlchemy == 2.0.32
+websockets == 13.0
