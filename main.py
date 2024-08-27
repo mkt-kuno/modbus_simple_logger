@@ -1,13 +1,12 @@
 import os, time, copy, json, platform, psutil, datetime, asyncio
+import threading, queue
 import tkinter as tk
 import tkinter.ttk as ttk
 
-import threading, queue
-
 import numpy as np
 
-from microdot import Microdot
-import microdot.websocket
+import uvicorn
+from fastapi import FastAPI, WebSocket
 
 from pymodbus import FramerType
 import pymodbus.client as ModbusClient
@@ -16,7 +15,6 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, Session
 from sqlalchemy.schema import Column
 from sqlalchemy.types import DateTime, Integer, Float, String
-Base = declarative_base()
 
 DEBUG = True
 
@@ -25,8 +23,8 @@ MODBUS_MODE = 'RTU'
 MODBUS_BAUDRATE = 38400
 MODBUS_SLAVE_ADDRESS = 1
 
-WEBSOCKET_PORT = 60080
-WEBSOCKET_HOST = 'localhost' if DEBUG else '0.0.0.0'
+WEB_PORT = 60080
+WEB_HOST = 'localhost' if DEBUG else '0.0.0.0'
 
 NUM_CH_AI = 16
 NUM_CH_AO = 8
@@ -36,8 +34,8 @@ NUM_CH_PARAM = 16
 APP_DATA_DIR_PATH = os.path.join(os.environ['APPDATA'], 'ModbusSimpleLogger')
 TEMP_DATA_DIR_PATH = os.path.join(os.environ['TEMP'], 'ModbusSimpleLogger')
 
-class TableAio(Base):
-    __tablename__ = 'aio'
+class AioDataTable(declarative_base()):
+    __tablename__ = 'data'
     id = Column(Integer, primary_key=True, autoincrement=True)
     time = Column(DateTime)
     ai_raw_0 = Column(Integer)
@@ -252,13 +250,13 @@ class ThreadSafeAioData():
 class Application(tk.Frame):
     BG_CMD_MODBUS_START = 'modbus_start'
     BG_CMD_MODBUS_STOP = 'modbus_stop'
-    BG_CMD_SAVE_START = 'save_start'
-    BG_CMD_SAVE_STOP = 'save_stop'
+    BG_CMD_SQL_SAVE_START = 'sql_save_start'
+    BG_CMD_SQL_SAVE_STOP = 'sql_save_stop'
+    BG_CMD_SQL_SAVE = 'sql_save'
     BG_CMD_TERMINATE = 'terminate'
     BG_CMD_AO_SEND = 'ao_send'
     BG_CMD_AI_RECEIVE = 'ai_receive'
     BG_CMD_CHANGE_INTERVAL = 'change_interval'
-    BG_CMD_SAVE_SQL = 'save_sql'
 
     DEFALUT_CONFIG_JSON_NAME = 'config.json'
 
@@ -274,8 +272,9 @@ class Application(tk.Frame):
     _sql_db_path = ""
     _sql_save_interval_ms = 100
 
-    _webserver_url = "ws://%s:%d"%(WEBSOCKET_HOST, WEBSOCKET_PORT)
-    _microdot = Microdot()
+    _webserver_url = "ws://%s:%d"%(WEB_HOST, WEB_PORT)
+    _webserver_thread = None
+    _fastapi_app = FastAPI()
 
     _modbus_thread = None
     _modbus_msg_queue = queue.Queue()
@@ -301,11 +300,6 @@ class Application(tk.Frame):
     _entry_param_label_list = []
     _entry_param_unit_list = []
 
-    def _on_closing(self):
-        self._stop_background_job()
-        self._save_config_json_to_appdata()
-        self.master.destroy()
-
     def __init__(self, master=None):
         super().__init__(master)
         self.pack()
@@ -315,10 +309,10 @@ class Application(tk.Frame):
         self.master.geometry("1920x1000")
         self.master.resizable(False, True)
 
-        master.protocol("WM_DELETE_WINDOW", self._on_closing)
+        master.protocol("WM_DELETE_WINDOW", self._ui_on_closing)
 
         self._config_json = {}
-        self._load_config_json_from_appdata()
+        self._config_load_json_from_appdata()
 
         # restore calib values to AIO
         for ch in range(NUM_CH_AI):
@@ -328,328 +322,72 @@ class Application(tk.Frame):
             _a, _b, _c = self._config_json['ao'][ch]['calib']
             self._aio.set_ao_calib(_a, _b, _c, ch)
 
-        self._create_widgets()
-        self._start_background_job()
-        self.after(self._display_update_interval_ms, self._update_display)
+        self._ui_create_widgets()
+        self._ui_start_background_job()
+        self.after(self._display_update_interval_ms, self._ui_update_display)
 
-    def _create_config_json(self):
-        ret = {}
-        _ai = []
-        for ch in range(NUM_CH_AI):
-            _ch_data = {}
-            _ch_data['label'] = "AI CH %d LABEL"%ch if len(self._entry_ai_label_list)<=ch else self._entry_ai_label_list[ch].get()
-            _ch_data['unit'] = "nan" if len(self._entry_ai_unit_list)<=ch else self._entry_ai_unit_list[ch].get()
-            _ch_data['calib'] = self._aio.get_ai_calib(ch)
-            _ai.append(_ch_data)
-        ret['ai'] = _ai
+    def _ui_on_closing(self):
+        self._ui_stop_background_job()
+        self._config_save_json_to_appdata()
+        self.master.destroy()
 
-        _ao = []
-        for ch in range(NUM_CH_AO):
-            _ch_data = {}
-            _ch_data['label'] = "AO CH %d LABEL"%ch if len(self._entry_ao_label_list)<=ch else self._entry_ao_label_list[ch].get()
-            _ch_data['unit'] = "nan" if len(self._entry_ao_unit_list)<=ch else self._entry_ao_unit_list[ch].get()
-            _ch_data['calib'] =  self._aio.get_ao_calib(ch)
-            _ao.append(_ch_data)
-        ret['ao'] = _ao
-
-        _param = []
-        for ch in range(NUM_CH_PARAM):
-            _ch_data = {}
-            _ch_data['label'] = "Param CH %d LABEL"%ch if len(self._entry_param_label_list)<=ch else self._entry_param_label_list[ch].get()
-            _ch_data['unit'] = "nan" if len(self._entry_param_unit_list)<=ch else self._entry_param_unit_list[ch].get()
-            _param.append(_ch_data)
-        ret['param'] = _param
-        
-        return ret
-
-    def _save_config_json_to_appdata(self):
-        self._config_json = self._create_config_json()
-        with open(os.path.join(APP_DATA_DIR_PATH, self.DEFALUT_CONFIG_JSON_NAME), 'w') as f:
-            json.dump(self._config_json, f)
-
-    def _load_config_json_from_appdata(self):
-        if not os.path.exists(os.path.join(APP_DATA_DIR_PATH, self.DEFALUT_CONFIG_JSON_NAME)):
-            self._config_json = self._create_config_json()
-            return
-        try:
-            with open(os.path.join(APP_DATA_DIR_PATH, self.DEFALUT_CONFIG_JSON_NAME), 'r') as f:
-                self._config_json = json.load(f)
-        except Exception as e:
-            print('Failed to load config.json')
-            print(e)
-            self._config_json = self._create_config_json()
-
-    def _start_background_job(self):
-        if self._modbus_thread:
-            # Already started
-            return
-        self._modbus_thread = threading.Thread(target=self._modbus_bg_thread, daemon=True)
-        self._modbus_thread.start()
-        self._modbus_msg_queue.put(self.BG_CMD_MODBUS_START)
-        self._modbus_msg_queue.put(self.BG_CMD_AO_SEND)
-        self._modbus_msg_queue.put(self.BG_CMD_AI_RECEIVE)
-
-        #threading.Thread(target=self._webserver_bg_thread, daemon=True).start()
-        threading.Thread(target=asyncio.run, args=(self._bg_asyncio_main(),), daemon=True).start()
-
-    def _stop_background_job(self):
+    def _ui_start_background_job(self):
         if not self._modbus_thread:
-            # Already stopped
-            return
-        self._modbus_msg_queue.put(self.BG_CMD_MODBUS_STOP)
-        self._modbus_msg_queue.put(self.BG_CMD_TERMINATE)
-        self._modbus_thread.join()
+            self._modbus_thread = threading.Thread(target=self._bg_modbus_thread, daemon=True)
+            self._modbus_thread.name = 'ModbusThread'
+            self._modbus_thread.start()
+            self._modbus_msg_queue.put(self.BG_CMD_MODBUS_START)
+            self._modbus_msg_queue.put(self.BG_CMD_AO_SEND)
+            self._modbus_msg_queue.put(self.BG_CMD_AI_RECEIVE)
 
-    def _save_data_to_db(self):
-        if self._sql_engine:
-            try:
-                with Session(self._sql_engine) as session:
-                    aio = TableAio()
-                    aio.time = datetime.datetime.now()
-                    for ch in range(NUM_CH_AI):
-                        setattr(aio, 'ai_raw_%d'%ch, int(self._aio.get_ai_raw(ch)))
-                        setattr(aio, 'ai_phy_%d'%ch, float(self._aio.get_ai_phy(ch)))
-                    for ch in range(NUM_CH_AO):
-                        setattr(aio, 'ao_raw_%d'%ch, int(self._aio.get_ao_raw(ch)))
-                        setattr(aio, 'ao_phy_%d'%ch, float(self._aio.get_ao_phy(ch)))
-                    session.add(aio)
-                    session.commit()
-            except Exception as e:
-                print('Background: Failed to save data')
-                print(e)
+        if not self._webserver_thread:
+            self._webserver_thread = threading.Thread(target=self._bg_webserver_thread, daemon=True)
+            self._webserver_thread.name = 'WebServerThread'
+            self._webserver_thread.start()
 
-    def _modbus_bg_calc_param(self):
-        try:
-            _previous = self._aio.get_param_phy_all()
-            
-            ########################################################################################################
-            ## @todo implement your own calculation
-            ########################################################################################################
-            for ch in range(NUM_CH_PARAM):
-                if ch < 4:
-                    _previous[ch] = np.sin(time.time()/3.14)
-                elif ch < 8:
-                    _previous[ch] = np.abs(np.sin(time.time()/3.14))
-                elif ch < 12:
-                    _previous[ch] = 1.0 if np.sin(time.time()/3.14) > 0.0 else -1
-                else:
-                    _previous[ch] = _previous[ch] + 0.01 if _previous[ch]+0.01 < 1 else -1
-            ########################################################################################################
-            ########################################################################################################
-            ########################################################################################################
+    def _ui_stop_background_job(self):
+        if self._modbus_thread:
+            self._modbus_msg_queue.put(self.BG_CMD_MODBUS_STOP)
+            self._modbus_msg_queue.put(self.BG_CMD_TERMINATE)
+            self._modbus_thread.join()
+            self._modbus_thread = None
 
-            self._aio.set_param_phy_all(_previous)
-        except Exception as e:
-            print('Background: Failed to calc param')
-            print(e)
-
-    def _create_json_response(self):
-        json_env = {
-            "version": "1.0",
-            'num_ch_ai': NUM_CH_AI,
-            'num_ch_ao': NUM_CH_AO,
-            'num_ch_param': NUM_CH_PARAM,
-            'modbus_com_port': MODBUS_COM_PORT,
-            'modbus_mode': MODBUS_MODE,
-            'modbus_baudrate': MODBUS_BAUDRATE,
-            'modbus_slave_address': MODBUS_SLAVE_ADDRESS,
-        }
-        json_key =  ["index", "time"] + \
-                    ["ai_raw_%d"%i for i in range(NUM_CH_AI)] + \
-                    ["ai_phy_%d"%i for i in range(NUM_CH_AI)] + \
-                    ["ao_raw_%d"%i for i in range(NUM_CH_AO)] + \
-                    ["ao_phy_%d"%i for i in range(NUM_CH_AO)] + \
-                    ["ao_vlt_%d"%i for i in range(NUM_CH_AO)] + \
-                    ["param_phy_%d"%i for i in range(NUM_CH_PARAM)]
-        json_label = {"time": "Time"}
-        json_unit = {"time": None }
-        json_data = {
-            'index': -1, 
-            'time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'),
-        }
-        for ch in range(NUM_CH_AI):
-            _label = self._entry_ai_label_list[ch].get()
-            json_label['ai_raw_%d'%ch] = _label
-            json_data['ai_raw_%d'%ch] = int(self._aio.get_ai_raw(ch))
-            json_unit['ai_raw_%d'%ch] = 'i16'
-
-            json_label['ai_phy_%d'%ch] = _label
-            json_unit['ai_phy_%d'%ch] = self._entry_ai_unit_list[ch].get()
-            json_data['ai_phy_%d'%ch] = float(self._aio.get_ai_phy(ch))
-
-            json_label['ai_vlt_%d'%ch] = _label
-            if ch < int(NUM_CH_AI/2):
-                json_unit['ai_vlt_%d'%ch] = 'mV'
-                json_data['ai_vlt_%d'%ch] = self._convert_hx711_raw2vlt(int(self._aio.get_ai_raw(ch)))
-            else:
-                json_unit['ai_vlt_%d'%ch] = 'V'
-                json_data['ai_vlt_%d'%ch] = self._convert_ads1115_raw2vlt(int(self._aio.get_ai_raw(ch)))
-
-        for ch in range(NUM_CH_AO):
-            _label = self._entry_ao_label_list[ch].get()
-            json_label['ao_raw_%d'%ch] = _label
-            json_unit['ao_raw_%d'%ch] = 'i16'
-            json_data['ao_raw_%d'%ch] = int(self._aio.get_ao_raw(ch))
-
-            json_label['ao_phy_%d'%ch] = _label
-            json_unit['ao_phy_%d'%ch] = self._entry_ao_unit_list[ch].get()
-            json_data['ao_phy_%d'%ch] = float(self._aio.get_ao_phy(ch))
-
-            json_label['ao_vlt_%d'%ch] = _label
-            json_unit['ao_vlt_%d'%ch] = 'V'
-            json_data['ao_vlt_%d'%ch] = self._convert_gp8403_raw2vlt(self._aio.get_ao_raw(ch))
-        for ch in range(NUM_CH_PARAM):
-            json_label['param_phy_%d'%ch] = self._entry_param_label_list[ch].get()
-            json_unit['param_phy_%d'%ch] = self._entry_param_unit_list[ch].get()
-            json_data['param_phy_%d'%ch] = float(self._aio.get_param_phy(ch))
-        
-        ret = {
-            'env': json_env,
-            'key': json_key,
-            'label': json_label,
-            'unit': json_unit,
-            'data': [json_data],
-        }
-        return json.dumps(ret)
-
-    async def _microdot_websocket_handler(self, request):
-        ws = await microdot.websocket.websocket_upgrade(request)
-        while True:
-            ret = self._create_json_response()
-            try:
-                await ws.send(ret)
-                await asyncio.sleep(1)
-            except Exception as e:
-                break
-    
-    async def _bg_asyncio_main(self):
-        self._microdot.route('/ws')(self._microdot_websocket_handler)
-        await self._microdot.start_server(debug=False, host=WEBSOCKET_HOST, port=WEBSOCKET_PORT)
-        await asyncio.get_running_loop().create_future()
-
-    def _modbus_bg_thread(self):
-        _base_time = time.time()
-        _modbus_interval_ms = self._modbus_interval_ms
-        _sql_save_interval_ms = self._sql_save_interval_ms
-
-        while True:
-            msg = self._modbus_msg_queue.get()
-            match msg:
-                case self.BG_CMD_TERMINATE:
-                    break
-                case self.BG_CMD_MODBUS_START:
-                    framer = FramerType.RTU if MODBUS_MODE == 'RTU' else FramerType.ASCII
-                    with self._modbus_client_lock:
-                        self._modbus_client = ModbusClient.ModbusSerialClient(port=MODBUS_COM_PORT, framer=framer, baudrate=MODBUS_BAUDRATE, timeout=0.5)
-                        if not self._modbus_client.connect():
-                            print('Background: Modbus Failed to connect')
-                    print('Background: Modbus Connected')
-                case self.BG_CMD_MODBUS_STOP:
-                    with self._modbus_client_lock:
-                        self._modbus_client.close()
-                    print('Background: Modbus Closed')
-                case self.BG_CMD_SAVE_START:
-                    if not self._sql_engine:
-                        self._sql_db_path = os.path.join(TEMP_DATA_DIR_PATH, '%s.sqlite3'%datetime.datetime.now().strftime('%Y%m%d%H%M%S'))
-                        self._sql_engine = create_engine('sqlite:///'+self._sql_db_path)
-                        Base.metadata.create_all(self._sql_engine)
-                        print('Background: Database created')
-                        print('Background: Database path: %s'%self._sql_db_path)
-                        threading.Timer(next_time, lambda: self._modbus_msg_queue.put(self.BG_CMD_SAVE_SQL)).start()
-                case self.BG_CMD_SAVE_SQL:
-                    if self._sql_engine:
-                        self._save_data_to_db()
-                        next_time = ((_base_time - time.time()) % _sql_save_interval_ms/1000.0) or _sql_save_interval_ms/1000.0
-                        threading.Timer(next_time, lambda: self._modbus_msg_queue.put(self.BG_CMD_SAVE_SQL)).start()
-                case self.BG_CMD_SAVE_STOP:
-                    if self._sql_engine:
-                        self._sql_engine.clear_compiled_cache()
-                        self._sql_engine.dispose()
-                        self._sql_engine = None
-                        print('Background: Database closed: %s'%self._sql_db_path)
-                        self._sql_db_path = ""
-                case self.BG_CMD_AO_SEND:
-                    self._sync_ao_all()
-                case self.BG_CMD_AI_RECEIVE:
-                    self._sync_ai_all()
-                    self._modbus_bg_calc_param()
-                    next_time = ((_base_time - time.time()) % _modbus_interval_ms/1000.0) or _modbus_interval_ms/1000.0
-                    threading.Timer(next_time, lambda: self._modbus_msg_queue.put(self.BG_CMD_AI_RECEIVE)).start()
-                case self.BG_CMD_CHANGE_INTERVAL:
-                    _sql_save_interval_ms = self._sql_save_interval_ms
-                case _:
-                    print('Background: Unknown message')
-
-    def _sync_ai_all(self):
-        rr = None
-        try:
-            with self._modbus_client_lock:
-                if self._modbus_client:
-                    rr = self._modbus_client.read_input_registers(0, NUM_CH_AI, slave=MODBUS_SLAVE_ADDRESS)
-        except Exception as e:
-            print('sync_ai_all, Failed to write')
-            print(e)
-        if rr is not None and not rr.isError():
-            self._aio.set_ai_raw_all(np.array(rr.registers, dtype=np.uint16).astype(np.int16))
-
-    def _sync_ao_all(self):
-        data = self._aio.get_ao_data_all()
-        try:
-            with self._modbus_client_lock:
-                if self._modbus_client:
-                    self._modbus_client.write_registers(0, data, slave=MODBUS_SLAVE_ADDRESS)
-        except Exception as e:
-            print('sync_ao_all, Failed to write')
-            print(e)
-
-    def _convert_hx711_raw2vlt(self, raw:int):
-        return float(raw)/32768.0/128.0/2*1E3*self.HX711_VOLTAGE
-    
-    def _convert_hx711_raw2ust(self, raw:int):
-        return float(raw)/32768.0/128.0/2*1E3*2E3
-
-    def _convert_ads1115_raw2vlt(self, raw:int):
-        return float(raw)/32768.0*6.144
-    
-    def _convert_gp8403_raw2vlt(self, raw:int):
-        return float(raw)/1000.0
-
-    def _update_display(self):
-        ao = self._aio.get_ao_data_all()
-        ai = self._aio.get_ai_raw_all()
-        aic = self._aio.get_ai_phy_all()
-        aoc = self._aio.get_ao_phy_all()
-        par = self._aio.get_param_phy_all()
+    def _ui_update_display(self):
+        _ao = self._aio.get_ao_data_all()
+        _ai = self._aio.get_ai_raw_all()
+        _aic = self._aio.get_ai_phy_all()
+        _aoc = self._aio.get_ao_phy_all()
+        _par = self._aio.get_param_phy_all()
 
         for ch in range(NUM_CH_AI):
-            self._label_ai_raw_list[ch].config(text="%d"% ai[ch])
-            _raw = ai[ch]
-            _phy = aic[ch]
+            self._label_ai_raw_list[ch].config(text="%d"% _ai[ch])
+            _raw = _ai[ch]
+            _phy = _aic[ch]
             if ch < int(NUM_CH_AI/2):
-                _vlt = self._convert_hx711_raw2vlt(_raw)
-                _ust = self._convert_hx711_raw2ust(_raw)
+                _vlt = self._util_convert_hx711_raw2vlt(_raw)
+                _ust = self._util_convert_hx711_raw2ust(_raw)
                 self._label_ai_vlt_list[ch].config(text=self.FMT_STRING_FLOAT%_vlt)
                 self._label_ai_ust_list[ch].config(text=self.FMT_STRING_FLOAT%_ust)
             else:
-                _vlt = self._convert_ads1115_raw2vlt(_raw)
+                _vlt = self._util_convert_ads1115_raw2vlt(_raw)
                 self._label_ai_vlt_list[ch].config(text=self.FMT_STRING_FLOAT%_vlt)
             self._label_ai_phy_list[ch].config(text=self.FMT_STRING_FLOAT%_phy)
         
         for ch in range(NUM_CH_AO):
-            _raw = int(ao[ch])
-            _phy = float(aoc[ch])
-            _vlt = self._convert_gp8403_raw2vlt(ao[ch])
+            _raw = int(_ao[ch])
+            _phy = float(_aoc[ch])
+            _vlt = self._util_convert_gp8403_raw2vlt(_ao[ch])
             self._label_ao_raw_list[ch].config(text=_raw)
             self._label_ao_phy_list[ch].config(text=self.FMT_STRING_FLOAT%_phy)
             self._label_ao_vlt_list[ch].config(text=self.FMT_STRING_FLOAT%_vlt)
 
         for ch in range(NUM_CH_PARAM):
-            _phy = float(par[ch])
+            _phy = float(_par[ch])
             self._label_param_phy_list[ch].config(text=self.FMT_STRING_FLOAT%_phy)
 
-        self.after(self._display_update_interval_ms, self._update_display)
+        self.after(self._display_update_interval_ms, self._ui_update_display)
 
-    def _req_set_ao(self, ch, entry):
+    def _ui_send_req_set_ao(self, ch, entry):
         try:
             _x = float(entry.get())
             _x = np.uint16(_x*1000)
@@ -660,7 +398,7 @@ class Application(tk.Frame):
         except ValueError as e:
             pass
 
-    def _req_change_interval(self, interval_ms):
+    def _ui_send_req_change_interval(self, interval_ms):
         try:
             _ms = 100
             if type(interval_ms) is str:
@@ -679,7 +417,17 @@ class Application(tk.Frame):
         except ValueError as e:
             print(e)
 
-    def _create_widgets(self):
+    def _ui_push_start_button(self):
+        self.start_save_button.config(state='disabled')
+        self._modbus_msg_queue.put('save_start')
+        self.stop_save_button.config(state='normal')
+    
+    def _ui_push_stop_button(self):
+        self.stop_save_button.config(state='disabled')
+        self._modbus_msg_queue.put('save_stop')
+        self.start_save_button.config(state='normal')
+
+    def _ui_create_widgets(self):
         FONT_NAME = 'Consolas'
 
         WIDTH_OF_TYPE_LABEL = 4
@@ -793,14 +541,6 @@ class Application(tk.Frame):
             _label.grid(row=_row, column=1)
             self._label_ao_vlt_list.append(_label)
             _make_unit_label(_lframe, 'V', _row, 2)
-            # # Set Value Entry and Button
-            # if DEBUG:
-            #     _row += 1
-            #     _make_type_label(_lframe, 'Vlt', _row, 0)
-            #     _entry = tk.Entry(_lframe, width=WIDTH_OF_DIGIT_LABEL, font=FONT_NORMAL, justify='right', state=_state)
-            #     _entry.grid(row=_row, column=1)
-            #     _entry.insert(0, '0')
-            #     tk.Button(_lframe, text='Set', font=FONT_SMALL, command=lambda ch=ch, entry=_entry: self.set_ao(ch, entry), state=_state).grid(row=_row, column=2)
         _parent_frame.pack(side=tk.TOP, padx=5)
 
         # Parameter Frame
@@ -811,7 +551,6 @@ class Application(tk.Frame):
 
             _lframe = tk.LabelFrame(_parent_frame, text=_text, font=FONT_BOLD)
             _lframe.grid(row=ch//int(NUM_CH_PARAM/2), column=ch%int(NUM_CH_PARAM/2), padx=3, pady=5, sticky='w')
-
             # Label for Channel
             _row = 0
             self._entry_param_label_list.append(_make_label_entry(_lframe, _config['label'], _row, 0))
@@ -946,23 +685,11 @@ class Application(tk.Frame):
             _entry = tk.Entry(_parent_frame, width=WIDTH_OF_DIGIT_LABEL, font=FONT_NORMAL, justify='right')
             _entry.grid(row=_row, column=1, padx=5)
             _entry.insert(0, '0')
-            _btn = tk.Button(_parent_frame, text='Set', font=FONT_SMALL, command=lambda: self._req_set_ao(_ao_cb.current(), _entry))
+            _btn = tk.Button(_parent_frame, text='Set', font=FONT_SMALL, command=lambda: self._ui_send_req_set_ao(_ao_cb.current(), _entry))
             _btn.grid(row=_row, column=2, padx=5)
 
-            _ao_cb.bind('<<ComboboxSelected>>', lambda e: _entry.delete(0, tk.END) or _entry.insert(0, self._convert_gp8403_raw2vlt(self._aio.get_ao_raw(_ao_cb.current()))))
+            _ao_cb.bind('<<ComboboxSelected>>', lambda e: _entry.delete(0, tk.END) or _entry.insert(0, self._util_convert_gp8403_raw2vlt(self._aio.get_ao_raw(_ao_cb.current()))))
         _parent_frame.pack(side=tk.LEFT, padx=5)
-
-        # # Set Interval Frame
-        # _parent_frame = tk.LabelFrame(self, text='Set Interval', font=FONT_LARGE_BOLD)
-        # if _parent_frame:
-        #     _row = 0
-        #     # interval is range(100, 100*1000, ) and use combobox
-        #     _interval_cb_values = ["100ms", "200ms", "500ms", "1s", "2s", "5s", "10s", "30s", "1min", "5min", "10min"]
-        #     _interval_cb = ttk.Combobox(_parent_frame, values=_interval_cb_values, state='readonly', font=FONT_NORMAL)
-        #     _interval_cb.grid(row=_row, column=0, columnspan=2, padx=5)
-        #     _btn = tk.Button(_parent_frame, text='Update', font=FONT_SMALL, command=lambda: self._req_change_interval(_interval_cb.get()))
-        #     _btn.grid(row=_row, column=2, padx=5)
-        # _parent_frame.pack(side=tk.LEFT, padx=5)
 
         # Information Frame
         _parent_frame = tk.LabelFrame(self, text='Information', font=FONT_LARGE_BOLD)
@@ -976,20 +703,283 @@ class Application(tk.Frame):
             tk.Label(_parent_frame, text=_text, font=FONT_NORMAL, anchor="n").pack(side=tk.LEFT)
         _parent_frame.pack(side=tk.LEFT, padx=5)
 
-        # self.start_save_button = tk.Button(self, text='Start Save', font=FONT_NORMAL, command=self._push_start_button)
-        # self.start_save_button.pack(side=tk.LEFT)
-        # self.stop_save_button = tk.Button(self, text='Stop Save', font=FONT_NORMAL, command=self._push_stop_button, state='disabled')
-        # self.stop_save_button.pack(side=tk.LEFT)
+        self.start_save_button = tk.Button(self, text='Start Save', font=FONT_NORMAL, command=self._ui_push_start_button)
+        self.start_save_button.pack(side=tk.LEFT)
+        self.stop_save_button = tk.Button(self, text='Stop Save', font=FONT_NORMAL, command=self._ui_push_stop_button, state='disabled')
+        self.stop_save_button.pack(side=tk.LEFT)
 
-    def _push_start_button(self):
-        self.start_save_button.config(state='disabled')
-        self._modbus_msg_queue.put('save_start')
-        self.stop_save_button.config(state='normal')
+    def _config_create_json(self):
+        ret = {}
+        _ai = []
+        for ch in range(NUM_CH_AI):
+            _ch_data = {}
+            _ch_data['label'] = "AI CH %d LABEL"%ch if len(self._entry_ai_label_list)<=ch else self._entry_ai_label_list[ch].get()
+            _ch_data['unit'] = "nan" if len(self._entry_ai_unit_list)<=ch else self._entry_ai_unit_list[ch].get()
+            _ch_data['calib'] = self._aio.get_ai_calib(ch)
+            _ai.append(_ch_data)
+        ret['ai'] = _ai
+
+        _ao = []
+        for ch in range(NUM_CH_AO):
+            _ch_data = {}
+            _ch_data['label'] = "AO CH %d LABEL"%ch if len(self._entry_ao_label_list)<=ch else self._entry_ao_label_list[ch].get()
+            _ch_data['unit'] = "nan" if len(self._entry_ao_unit_list)<=ch else self._entry_ao_unit_list[ch].get()
+            _ch_data['calib'] =  self._aio.get_ao_calib(ch)
+            _ao.append(_ch_data)
+        ret['ao'] = _ao
+
+        _param = []
+        for ch in range(NUM_CH_PARAM):
+            _ch_data = {}
+            _ch_data['label'] = "Param CH %d LABEL"%ch if len(self._entry_param_label_list)<=ch else self._entry_param_label_list[ch].get()
+            _ch_data['unit'] = "nan" if len(self._entry_param_unit_list)<=ch else self._entry_param_unit_list[ch].get()
+            _param.append(_ch_data)
+        ret['param'] = _param
+        
+        return ret
+
+    def _config_save_json_to_appdata(self):
+        self._config_json = self._config_create_json()
+        with open(os.path.join(APP_DATA_DIR_PATH, self.DEFALUT_CONFIG_JSON_NAME), 'w') as f:
+            json.dump(self._config_json, f)
+
+    def _config_load_json_from_appdata(self):
+        if not os.path.exists(os.path.join(APP_DATA_DIR_PATH, self.DEFALUT_CONFIG_JSON_NAME)):
+            self._config_json = self._config_create_json()
+            return
+        try:
+            with open(os.path.join(APP_DATA_DIR_PATH, self.DEFALUT_CONFIG_JSON_NAME), 'r') as f:
+                self._config_json = json.load(f)
+        except Exception as e:
+            print('Failed to load config.json')
+            print(e)
+            self._config_json = self._config_create_json()
+
+    def _bg_sql_save_stop(self):
+        if not self._sql_engine:
+            return
+        
+        self._sql_engine.clear_compiled_cache()
+        self._sql_engine.dispose()
+        self._sql_engine = None
+        print('Background: Database closed: %s'%self._sql_db_path)
+        self._sql_db_path = ""
+
+    def _bg_sql_save_start(self):
+        if self._sql_engine:
+            self._bg_sql_save_stop()
+        self._sql_db_path = os.path.join(TEMP_DATA_DIR_PATH, '%s.sqlite3'%datetime.datetime.now().strftime('%Y%m%d%H%M%S'))
+        self._sql_engine = create_engine('sqlite:///'+self._sql_db_path)
+        Base.metadata.create_all(self._sql_engine)
+        print('Background: Database created')
+        print('Background: Database path: %s'%self._sql_db_path)
+
+    def _bg_sql_save(self):
+        if not self._sql_engine:
+            return
+        try:
+            with Session(self._sql_engine) as session:
+                data = AioDataTable()
+                data.time = datetime.datetime.now()
+                for ch in range(NUM_CH_AI):
+                    setattr(data, 'ai_raw_%d'%ch, self._aio.get_ai_raw(ch))
+                    setattr(data, 'ai_phy_%d'%ch, self._aio.get_ai_phy(ch))
+                for ch in range(NUM_CH_AO):
+                    setattr(data, 'ao_raw_%d'%ch, self._aio.get_ao_raw(ch))
+                    setattr(data, 'ao_phy_%d'%ch, self._aio.get_ao_phy(ch))
+                session.add(data)
+                session.commit()
+        except Exception as e:
+            print('Background: Failed to save data')
+            print(e)
+
+    def _bg_modbus_calc_param(self):
+        try:
+            _previous = self._aio.get_param_phy_all()
+            
+            ########################################################################################################
+            ## @todo implement your own calculation
+            ########################################################################################################
+            for ch in range(NUM_CH_PARAM):
+                if ch < 4:
+                    _previous[ch] = np.sin(time.time()/3.14)
+                elif ch < 8:
+                    _previous[ch] = np.abs(np.sin(time.time()/3.14))
+                elif ch < 12:
+                    _previous[ch] = 1.0 if np.sin(time.time()/3.14) > 0.0 else -1
+                else:
+                    _previous[ch] = _previous[ch] + 0.01 if _previous[ch]+0.01 < 1 else -1
+            ########################################################################################################
+            ########################################################################################################
+            ########################################################################################################
+
+            self._aio.set_param_phy_all(_previous)
+        except Exception as e:
+            print('Background: Failed to calc param')
+            print(e)
+
+    def _bg_modbus_thread(self):
+        _base_time = time.time()
+        _modbus_interval_ms = self._modbus_interval_ms
+        _sql_save_interval_ms = self._sql_save_interval_ms
+
+        while True:
+            msg = self._modbus_msg_queue.get()
+            match msg:
+                case self.BG_CMD_TERMINATE:
+                    break
+                case self.BG_CMD_MODBUS_START:
+                    framer = FramerType.RTU if MODBUS_MODE == 'RTU' else FramerType.ASCII
+                    with self._modbus_client_lock:
+                        self._modbus_client = ModbusClient.ModbusSerialClient(port=MODBUS_COM_PORT, framer=framer, baudrate=MODBUS_BAUDRATE, timeout=0.5)
+                        if not self._modbus_client.connect():
+                            print('Background: Modbus Failed to connect')
+                    print('Background: Modbus Connected')
+                case self.BG_CMD_MODBUS_STOP:
+                    with self._modbus_client_lock:
+                        self._modbus_client.close()
+                    print('Background: Modbus Closed')
+                case self.BG_CMD_SQL_SAVE_START:
+                    self._bg_sql_save_start()
+                    threading.Timer(next_time, lambda: self._modbus_msg_queue.put(self.BG_CMD_SQL_SAVE)).start()
+                case self.BG_CMD_SQL_SAVE:
+                    self._bg_sql_save()
+                    next_time = ((_base_time - time.time()) % _sql_save_interval_ms/1000.0) or _sql_save_interval_ms/1000.0
+                    threading.Timer(next_time, lambda: self._modbus_msg_queue.put(self.BG_CMD_SQL_SAVE)).start()
+                case self.BG_CMD_SQL_SAVE_STOP:
+                    self._bg_sql_save_stop()
+                case self.BG_CMD_AO_SEND:
+                    self._bg_modbus_sync_ao_all()
+                case self.BG_CMD_AI_RECEIVE:
+                    self._bg_modbus_sync_ai_all()
+                    self._bg_modbus_calc_param()
+                    next_time = ((_base_time - time.time()) % _modbus_interval_ms/1000.0) or _modbus_interval_ms/1000.0
+                    threading.Timer(next_time, lambda: self._modbus_msg_queue.put(self.BG_CMD_AI_RECEIVE)).start()
+                case self.BG_CMD_CHANGE_INTERVAL:
+                    _sql_save_interval_ms = self._sql_save_interval_ms
+                case _:
+                    print('Background: Unknown message')
+
+    def _bg_modbus_sync_ai_all(self):
+        rr = None
+        try:
+            with self._modbus_client_lock:
+                if self._modbus_client:
+                    rr = self._modbus_client.read_input_registers(0, NUM_CH_AI, slave=MODBUS_SLAVE_ADDRESS)
+        except Exception as e:
+            print('sync_ai_all, Failed to write')
+            print(e)
+        if rr is not None and not rr.isError():
+            self._aio.set_ai_raw_all(np.array(rr.registers, dtype=np.uint16).astype(np.int16))
+
+    def _bg_modbus_sync_ao_all(self):
+        data = self._aio.get_ao_data_all()
+        try:
+            with self._modbus_client_lock:
+                if self._modbus_client:
+                    self._modbus_client.write_registers(0, data, slave=MODBUS_SLAVE_ADDRESS)
+        except Exception as e:
+            print('sync_ao_all, Failed to write')
+            print(e)
+
+    def _bg_webserver_create_json_response(self):
+        json_env = {
+            "version": "1.0",
+            'num_ch_ai': NUM_CH_AI,
+            'num_ch_ao': NUM_CH_AO,
+            'num_ch_param': NUM_CH_PARAM,
+            'modbus_com_port': MODBUS_COM_PORT,
+            'modbus_mode': MODBUS_MODE,
+            'modbus_baudrate': MODBUS_BAUDRATE,
+            'modbus_slave_address': MODBUS_SLAVE_ADDRESS,
+        }
+        json_key =  ["index", "time"] + \
+                    ["ai_raw_%d"%i for i in range(NUM_CH_AI)] + \
+                    ["ai_phy_%d"%i for i in range(NUM_CH_AI)] + \
+                    ["ao_raw_%d"%i for i in range(NUM_CH_AO)] + \
+                    ["ao_phy_%d"%i for i in range(NUM_CH_AO)] + \
+                    ["ao_vlt_%d"%i for i in range(NUM_CH_AO)] + \
+                    ["param_phy_%d"%i for i in range(NUM_CH_PARAM)]
+        json_label = {"time": "Time"}
+        json_unit = {"time": None }
+        json_data = {
+            'index': -1, 
+            'time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'),
+        }
+        for ch in range(NUM_CH_AI):
+            _label = self._entry_ai_label_list[ch].get()
+            json_label['ai_raw_%d'%ch] = _label
+            json_data['ai_raw_%d'%ch] = int(self._aio.get_ai_raw(ch))
+            json_unit['ai_raw_%d'%ch] = 'i16'
+
+            json_label['ai_phy_%d'%ch] = _label
+            json_unit['ai_phy_%d'%ch] = self._entry_ai_unit_list[ch].get()
+            json_data['ai_phy_%d'%ch] = float(self._aio.get_ai_phy(ch))
+
+            json_label['ai_vlt_%d'%ch] = _label
+            if ch < int(NUM_CH_AI/2):
+                json_unit['ai_vlt_%d'%ch] = 'mV'
+                json_data['ai_vlt_%d'%ch] = self._util_convert_hx711_raw2vlt(int(self._aio.get_ai_raw(ch)))
+            else:
+                json_unit['ai_vlt_%d'%ch] = 'V'
+                json_data['ai_vlt_%d'%ch] = self._util_convert_ads1115_raw2vlt(int(self._aio.get_ai_raw(ch)))
+
+        for ch in range(NUM_CH_AO):
+            _label = self._entry_ao_label_list[ch].get()
+            json_label['ao_raw_%d'%ch] = _label
+            json_unit['ao_raw_%d'%ch] = 'i16'
+            json_data['ao_raw_%d'%ch] = int(self._aio.get_ao_raw(ch))
+
+            json_label['ao_phy_%d'%ch] = _label
+            json_unit['ao_phy_%d'%ch] = self._entry_ao_unit_list[ch].get()
+            json_data['ao_phy_%d'%ch] = float(self._aio.get_ao_phy(ch))
+
+            json_label['ao_vlt_%d'%ch] = _label
+            json_unit['ao_vlt_%d'%ch] = 'V'
+            json_data['ao_vlt_%d'%ch] = self._util_convert_gp8403_raw2vlt(self._aio.get_ao_raw(ch))
+        for ch in range(NUM_CH_PARAM):
+            json_label['param_phy_%d'%ch] = self._entry_param_label_list[ch].get()
+            json_unit['param_phy_%d'%ch] = self._entry_param_unit_list[ch].get()
+            json_data['param_phy_%d'%ch] = float(self._aio.get_param_phy(ch))
+        
+        ret = {
+            'env': json_env,
+            'key': json_key,
+            'label': json_label,
+            'unit': json_unit,
+            'data': [json_data],
+        }
+        return json.dumps(ret)
     
-    def _push_stop_button(self):
-        self.stop_save_button.config(state='disabled')
-        self._modbus_msg_queue.put('save_stop')
-        self.start_save_button.config(state='normal')
+    async def _bg_webserver_websocket_handler(self, websocket: WebSocket):
+        await websocket.accept()
+        while True:
+            ret = self._bg_webserver_create_json_response()
+            try:
+                await websocket.send_text(ret)
+                await asyncio.sleep(1)
+            except Exception as e:
+                break
+
+    def _bg_webserver_hello_world(self):
+        return {"Hello": "World"}
+
+    def _bg_webserver_thread(self):
+        self._fastapi_app.add_api_route('/hello', self._bg_webserver_hello_world)
+        self._fastapi_app.add_websocket_route('/ws', self._bg_webserver_websocket_handler)
+        uvicorn.run(self._fastapi_app, host=WEB_HOST, port=WEB_PORT)
+
+    def _util_convert_hx711_raw2vlt(self, raw:int):
+        return float(raw)/32768.0/128.0/2*1E3*self.HX711_VOLTAGE
+    
+    def _util_convert_hx711_raw2ust(self, raw:int):
+        return float(raw)/32768.0/128.0/2*1E3*2E3
+
+    def _util_convert_ads1115_raw2vlt(self, raw:int):
+        return float(raw)/32768.0*6.144
+    
+    def _util_convert_gp8403_raw2vlt(self, raw:int):
+        return float(raw)/1000.0
 
 def main():
     if not os.path.exists(TEMP_DATA_DIR_PATH):

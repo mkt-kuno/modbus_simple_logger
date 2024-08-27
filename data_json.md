@@ -12,7 +12,7 @@
 |/data/|Type|備考|
 |----|----|----|
 |index|int|必須<br>-1:リアルタイム情報<br>0以上:DBデータ等、取得済みデータ列への参照インデックス|
-|time|int(推奨)/<br>float/string| {%Y-%m-%d %H:%M:%S.%f} を推奨、次点エポック秒/ミリ秒|
+|time|string(推奨)/<br>int/float| {%Y-%m-%d %H:%M:%S.%f} を推奨<br>次点エポック/Unix/起動後経過時間 の 秒float/ミリ秒int|
 |{key}|int/float/<br>string(非推奨)|必須、その他データ<br>{key}に対応するデータは必須|
 
 ## データソース
