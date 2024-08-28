@@ -34,7 +34,7 @@ NUM_CH_PARAM = 16
 APP_DATA_DIR_PATH = os.path.join(os.environ['APPDATA'], 'ModbusSimpleLogger')
 TEMP_DATA_DIR_PATH = os.path.join(os.environ['TEMP'], 'ModbusSimpleLogger')
 
-class AioDataTable(declarative_base()):
+class AioDataTable(declarative_base()): # type: ignore
     __tablename__ = 'data'
     id = Column(Integer, primary_key=True, autoincrement=True)
     time = Column(DateTime)
@@ -244,7 +244,7 @@ class ThreadSafeAioData():
         if len(data) != NUM_CH_AO:
             raise ValueError('Invalid data shape')
         with self._lock:
-            self._ao = np.array(np.data)
+            self._ao = np.array(data)
 
 class Application(tk.Frame):
     BG_CMD_MODBUS_START = 'modbus_start'
@@ -276,28 +276,28 @@ class Application(tk.Frame):
     _fastapi_app = FastAPI()
 
     _modbus_thread = None
-    _modbus_msg_queue = queue.Queue()
+    _modbus_msg_queue: queue.Queue = queue.Queue()
     _modbus_client = None
     _modbus_client_lock = threading.Lock()
     _modbus_interval_ms = 100
 
     _pipe_is_wainting = False
 
-    _label_ai_raw_list = []
-    _label_ai_vlt_list = []
-    _label_ai_ust_list = []
-    _label_ai_phy_list = []
-    _label_ao_raw_list = []
-    _label_ao_phy_list = []
-    _label_ao_vlt_list = []
-    _label_param_phy_list = []
+    _label_ai_raw_list: list[tk.Label] = []
+    _label_ai_vlt_list: list[tk.Label] = []
+    _label_ai_ust_list: list[tk.Label] = []
+    _label_ai_phy_list: list[tk.Label] = []
+    _label_ao_raw_list: list[tk.Label] = []
+    _label_ao_phy_list: list[tk.Label] = []
+    _label_ao_vlt_list: list[tk.Label] = []
+    _label_param_phy_list: list[tk.Label] = []
 
-    _entry_ai_label_list = []
-    _entry_ai_unit_list = []
-    _entry_ao_label_list = []
-    _entry_ao_unit_list = []
-    _entry_param_label_list = []
-    _entry_param_unit_list = []
+    _entry_ai_label_list: list[tk.Entry] = []
+    _entry_ai_unit_list: list[tk.Entry] = []
+    _entry_ao_label_list: list[tk.Entry] = []
+    _entry_ao_unit_list: list[tk.Entry] = []
+    _entry_param_label_list: list[tk.Entry] = []
+    _entry_param_unit_list: list[tk.Entry] = []
 
     def __init__(self, master=None):
         super().__init__(master)
@@ -578,7 +578,7 @@ class Application(tk.Frame):
                     _a, _b, _c = self._aio.get_ai_calib(_ch)
                     _phy = self._aio.get_ai_phy(_ch)
                 else:
-                    _a, _b, _c = self._aio.get_ao_phy(_ch-NUM_CH_AI)
+                    _a, _b, _c = self._aio.get_ao_calib(_ch-NUM_CH_AI)
                     _phy = self._aio.get_ao_phy(_ch-NUM_CH_AI)
                 entry_a.delete(0, tk.END)
                 entry_a.insert(0, self.FMT_STRING_CALIB_FLOAT%_a)
@@ -908,8 +908,8 @@ class Application(tk.Frame):
         for ch in range(NUM_CH_AI):
             _label = self._entry_ai_label_list[ch].get()
             json_label['ai_raw_%d'%ch] = _label
-            json_data['ai_raw_%d'%ch] = int(self._aio.get_ai_raw(ch))
             json_unit['ai_raw_%d'%ch] = 'i16'
+            json_data['ai_raw_%d'%ch] = int(self._aio.get_ai_raw(ch))
 
             json_label['ai_phy_%d'%ch] = _label
             json_unit['ai_phy_%d'%ch] = self._entry_ai_unit_list[ch].get()
