@@ -494,7 +494,7 @@ class Application(tk.Frame):
             _label = _make_digit_label(_lframe)
             _label.grid(row=_row, column=1)
             self._label_ai_vlt_list.append(_label)
-            _text = 'mV' if ch < int(NUM_CH_AI/2) else 'V'
+            _text = 'mV/V' if ch < int(NUM_CH_AI/2) else 'V'
             _make_unit_label(_lframe, _text, _row, 2)
             # micro strain
             _row += 1
@@ -917,7 +917,7 @@ class Application(tk.Frame):
 
             json_label['ai_vlt_%d'%ch] = _label
             if ch < int(NUM_CH_AI/2):
-                json_unit['ai_vlt_%d'%ch] = 'mV'
+                json_unit['ai_vlt_%d'%ch] = 'mV/V'
                 json_data['ai_vlt_%d'%ch] = self._util_convert_hx711_raw2vlt(int(self._aio.get_ai_raw(ch)))
             else:
                 json_unit['ai_vlt_%d'%ch] = 'V'
@@ -972,7 +972,7 @@ class Application(tk.Frame):
         uvicorn.run(self._fastapi_app, host=WEB_HOST, port=WEB_PORT)
 
     def _util_convert_hx711_raw2vlt(self, raw:int):
-        return float(raw)/32768.0/128.0/2*1E3*self.HX711_VOLTAGE
+        return float(raw)/32768.0/128.0/2*1E3
     
     def _util_convert_hx711_raw2ust(self, raw:int):
         return float(raw)/32768.0/128.0/2*1E3*2E3
