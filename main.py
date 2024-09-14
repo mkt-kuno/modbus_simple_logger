@@ -27,8 +27,9 @@ WEB_PORT = 60080
 WEB_HOST = 'localhost' if DEBUG else '0.0.0.0'
 
 NUM_CH_AI = 16
+NUM_CH_AI_LIMIT = 16
 NUM_CH_AO = 8
-NUM_CH_AO_LIMIT = 6
+NUM_CH_AO_LIMIT = 8
 NUM_CH_PARAM = 16
 
 APP_DATA_DIR_PATH = os.path.join(os.environ['APPDATA'], 'ModbusSimpleLogger')
@@ -864,15 +865,25 @@ class Application(tk.Frame):
         try:
             with self._modbus_client_lock:
                 if self._modbus_client:
-                    rr = self._modbus_client.read_input_registers(0, NUM_CH_AI, slave=MODBUS_SLAVE_ADDRESS)
+                    rr = self._modbus_client.read_input_registers(0, NUM_CH_AI_LIMIT, slave=MODBUS_SLAVE_ADDRESS)
         except Exception as e:
             print('sync_ai_all, Failed to write')
             print(e)
         if rr is not None and not rr.isError():
-            self._aio.set_ai_raw_all(np.array(rr.registers, dtype=np.uint16).astype(np.int16))
+            if NUM_CH_AI_LIMIT < NUM_CH_AI:
+                _temp = np.array(rr.registers, dtype=np.uint16).astype(np.int16)
+                print(_temp)
+                _temp = np.append(_temp, np.zeros(NUM_CH_AI-NUM_CH_AI_LIMIT, dtype=np.int16))
+                print(_temp)
+                # padding zero to _temp tail, same to NUM_CH_AI
+                self._aio.set_ai_raw_all(_temp)
+            else:
+                self._aio.set_ai_raw_all(np.array(rr.registers, dtype=np.uint16).astype(np.int16))
 
     def _bg_modbus_sync_ao_all(self):
         data = self._aio.get_ao_raw_all()
+        if NUM_CH_AO_LIMIT < NUM_CH_AO:
+            data = data[:NUM_CH_AO_LIMIT]
         try:
             with self._modbus_client_lock:
                 if self._modbus_client:
