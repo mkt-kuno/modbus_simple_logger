@@ -1,0 +1,11 @@
+name: modbus
+- python == 3.12.2
+- numpy == 2.1.0
+- pip:
+  - fastapi == 0.112.1
+  - pymodbus == 3.7.0
+  - uvicorn == 0.30.6
+  - SQLAlchemy == 2.0.32
+  - websockets == 13.0
+  - psutil == 6.0.0
+  - pyserial == 3.5.0
