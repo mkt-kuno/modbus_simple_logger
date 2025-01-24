@@ -1,6 +1,6 @@
 # Simple Logger App for Arduino Modbus AD/DA 
 Python3.10 以上で動作可能なシンプルなModbusロガーです  
-データ出力先は ADDPDATAの先にsqlite3だけという、こちらもシンプルな仕組みです。  
+データ出力先は APPDATAの先にsqlite3だけという、こちらもシンプルな仕組みです。  
 
 既存のPython環境を破壊しないためにも、AnacondaやMinicondaでPython環境を構築するか、  
 PyenvやvenvなどのPythonで標準的な環境切り分け、  
