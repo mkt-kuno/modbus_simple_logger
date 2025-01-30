@@ -8,5 +8,9 @@ PyenvやvenvなどのPythonで標準的な環境切り分け、
 
 動作にはCOMポートの書き換えのみPythonコードの変更が必要かと思っていますが、ほかにあればissueをあげてください。  
 
+ライセンスなどは関係なく、ライセンスフリーとして扱ってください。  
+どう使ってもらっても構いません。改変しても販売しても、すべてお任せします。    
+
+
 [Trio/Quartet](https://github.com/mkt-kuno/quartet)  
 [Yamanin](https://github.com/mkt-kuno/yamanin)  
